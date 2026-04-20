@@ -49,6 +49,7 @@ The project is built with a modular architecture:
    ```bash
    git clone https://github.com/yourusername/codelens.git
    cd codelens
+   
    ```
 2. Install dependencies:
    ```bash
