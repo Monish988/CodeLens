@@ -4,6 +4,68 @@ import { Search, File as FileIcon, Folder, Copy, ExternalLink, Activity, Box, Va
 import './DashboardPage.css';
 import { apiUrl } from '../api';
 
+const HighlightedSnippet = ({ text, query }) => {
+  if (!query || !text) return <span style={{ color: '#666' }}>{text}</span>;
+  const firstLine = text.split('\n')[0];
+  const idx = firstLine.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return <span style={{ color: '#666' }}>{firstLine}</span>;
+  return (
+    <>
+      <span style={{ color: '#666' }}>{firstLine.slice(0, idx)}</span>
+      <span style={{ color: '#fff', backgroundColor: '#2a3a1a' }}>
+        {firstLine.slice(idx, idx + query.length)}
+      </span>
+      <span style={{ color: '#666' }}>{firstLine.slice(idx + query.length)}</span>
+    </>
+  );
+};
+
+const ResultCard = ({ result, isSelected, onClick, searchQuery }) => {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        padding: '10px 14px',
+        borderBottom: '1px solid #1a1a1a',
+        backgroundColor: isSelected ? '#1a1a1a' : 'transparent',
+        cursor: 'pointer',
+        borderLeft: isSelected ? '2px solid #aaff00' : '2px solid transparent',
+      }}
+    >
+      <div style={{ 
+        fontSize: '12px', 
+        color: '#aaff00', 
+        fontFamily: 'monospace',
+        marginBottom: '4px',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }}>
+        {result.name || result.path?.split('/').pop() || result.path?.split('\\').pop()}
+      </div>
+
+      <div style={{
+        fontSize: '11px',
+        color: '#888',
+        fontFamily: 'monospace',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }}>
+        {result.line && (
+          <span style={{ color: '#555', marginRight: '6px' }}>
+            {result.line}
+          </span>
+        )}
+        <HighlightedSnippet 
+          text={result.content || ''} 
+          query={searchQuery} 
+        />
+      </div>
+    </div>
+  );
+};
+
 const DashboardPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const contextId = searchParams.get('contextId');
@@ -13,6 +75,32 @@ const DashboardPage = () => {
   const [selectedResult, setSelectedResult] = useState(null);
   const [fileContent, setFileContent] = useState('');
   const [searchTime, setSearchTime] = useState(0);
+  const [activeWorkspace, setActiveWorkspace] = useState('');
+
+  useEffect(() => {
+    fetch(apiUrl('/api/workspaces')).then(r => r.json()).then(d => {
+      if (d.workspaces?.[0]) setActiveWorkspace(d.workspaces[0].path.split(/[/\\]/).pop());
+    });
+  }, []);
+
+  const addToHistory = (queryStr, workspaceStr, resultCount, regex, caseSensitive) => {
+    if (!queryStr.trim()) return;
+    const existing = JSON.parse(localStorage.getItem('codelens-search-history') || '[]');
+    // Avoid saving identical sequential queries
+    if (existing.length > 0 && existing[0].query === queryStr) return;
+
+    const entry = {
+      id: crypto.randomUUID(),
+      query: queryStr,
+      workspace: workspaceStr,
+      timestamp: new Date().toISOString(),
+      resultCount,
+      regex,
+      caseSensitive,
+    };
+    existing.unshift(entry);
+    localStorage.setItem('codelens-search-history', JSON.stringify(existing.slice(0, 500)));
+  };
 
   useEffect(() => {
     const fetchSearch = async () => {
@@ -29,9 +117,13 @@ const DashboardPage = () => {
         const res = await fetch(url);
         if (res.ok) {
           const data = await res.json();
-          setResults(data.results || []);
-          if (data.results && data.results.length > 0 && !selectedResult) {
-            handleSelectResult(data.results[0]);
+          const fetchedResults = data.results || [];
+          setResults(fetchedResults);
+          
+          addToHistory(query, activeWorkspace, fetchedResults.length, false, false);
+          
+          if (fetchedResults.length > 0 && !selectedResult) {
+            handleSelectResult(fetchedResults[0]);
           }
         }
       } catch (err) {
@@ -125,42 +217,36 @@ const DashboardPage = () => {
       {/* Main Content Area */}
       <div className="dashboard-content">
         {/* Left Pane - Results */}
-        <div className="results-pane-adv">
-          <div className="results-header">
-            <span className="results-count">{results.length} RESULTS</span>
-            {query && <span className="results-time">{searchTime}ms</span>}
+        <div className="results-pane-adv" style={{
+          width: '260px',
+          height: '100vh',
+          overflowY: 'auto',
+          borderRight: '1px solid #1f1f1f',
+          flexShrink: 0,
+        }}>
+          <div style={{
+            padding: '6px 14px',
+            borderBottom: '1px solid #1f1f1f',
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: '11px',
+            color: '#555',
+            fontFamily: 'monospace',
+          }}>
+            <span>{results.length} RESULTS</span>
+            <span>{searchTime}ms</span>
           </div>
 
           <div className="results-list">
-            {results.map((result, idx) => {
-              const fileType = getFileExtension(result.path);
-              const fileName = getFileName(result.path);
-              
-              // We simulate the snippet logic for the UI listing
-              return (
-                <div 
-                  key={idx} 
-                  className={`result-card ${selectedResult === result ? 'active' : ''}`}
-                  onClick={() => handleSelectResult(result)}
-                >
-                  <div className="card-top">
-                    <div className="card-title">
-                      <span className={`file-type-icon ${fileType.class}`}>{fileType.label}</span>
-                      <span className="bold">{fileName}</span>
-                    </div>
-                    <span className={`type-badge ${result.type}`}>
-                      {result.type}
-                    </span>
-                  </div>
-                  <div className="card-path">{result.path}</div>
-                  <div className="card-snippet" style={{maxHeight: '60px', overflow: 'hidden'}}>
-                    <div className="snippet-line">
-                      <span className="code-text" style={{whiteSpace: 'pre-wrap'}}>{result.content.split('\\n')[0]}</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+            {results.map((result, idx) => (
+              <ResultCard 
+                key={idx} 
+                result={result} 
+                isSelected={selectedResult === result} 
+                onClick={() => handleSelectResult(result)} 
+                searchQuery={query}
+              />
+            ))}
             
             {results.length === 0 && query && (
               <div style={{padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)'}}>

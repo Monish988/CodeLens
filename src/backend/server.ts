@@ -155,9 +155,10 @@ app.get('/api/search', (req, res) => {
     // FTS5 MATCH query. 
     // If contextPaths exist, we boost them by checking f.path against the list.
     const stmt = db.prepare(`
-      SELECT s.name, s.content, s.type, f.path, s.file_id
+      SELECT s.name, s.content, s.type, f.path, s.file_id, e.start_line as line
       FROM search_index s
       JOIN files f ON s.file_id = f.id
+      LEFT JOIN entities e ON e.file_id = s.file_id AND e.name = s.name AND e.type = s.type
       WHERE search_index MATCH ?
       ORDER BY 
         -- Priority 1: Files in the active context
@@ -307,7 +308,7 @@ app.post('/api/format', (req, res) => {
 app.get('/api/files', (req, res) => {
   try {
     const db = (indexer as any).dbConn.getDb();
-
+    const q = (req.query.q as string || '').trim();
     let rootPath = (req.query.rootPath as string || '').trim();
 
     // If no rootPath given, resolve from the most-recently indexed workspace
@@ -317,18 +318,140 @@ app.get('/api/files', (req, res) => {
     }
 
     let files: any[];
-    if (rootPath) {
-      const prefix = rootPath.endsWith('/') ? rootPath : rootPath + '/';
-      files = db.prepare(
-        `SELECT id, path FROM files WHERE path LIKE ? ORDER BY path ASC`
-      ).all(prefix + '%');
+    if (q) {
+      try {
+        files = db.prepare(`
+          SELECT path, name, language 
+          FROM files 
+          WHERE path LIKE ? OR name LIKE ?
+          LIMIT 20
+        `).all(`%${q}%`, `%${q}%`);
+      } catch (err) {
+        // Fallback in case name or language columns don't exist
+        files = db.prepare(`
+          SELECT path
+          FROM files 
+          WHERE path LIKE ?
+          LIMIT 20
+        `).all(`%${q}%`);
+        files = files.map(f => ({
+          path: f.path,
+          name: f.path.split('/').pop(),
+          language: f.path.split('.').pop()
+        }));
+      }
     } else {
-      files = db.prepare('SELECT id, path FROM files ORDER BY path ASC').all();
+      if (rootPath) {
+        const prefix = rootPath.endsWith('/') ? rootPath : rootPath + '/';
+        files = db.prepare(
+          `SELECT id, path FROM files WHERE path LIKE ? ORDER BY path ASC`
+        ).all(prefix + '%');
+      } else {
+        files = db.prepare('SELECT id, path FROM files ORDER BY path ASC').all();
+      }
     }
 
     res.json({ files, workspace: rootPath || null });
   } catch (error) {
     res.status(500).json({ error: 'Failed to retrieve files' });
+  }
+});
+
+import path from 'path';
+
+app.post('/api/contexts/summary', async (req, res) => {
+  const { files, contextName } = req.body as { files: string[], contextName: string };
+
+  const workspaces = getAllWorkspaces();
+
+  // Read actual file contents (respect workspace boundary via pathSafety.ts)
+  const fileContents = files.map(filePath => {
+    try {
+      if (!isPathSafe(filePath, workspaces)) {
+        return `### File: ${filePath}\n(Access denied)`;
+      }
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const truncated = content.slice(0, 8000);  // cap per file to avoid token overflow
+      return `### File: ${filePath}\n\`\`\`\n${truncated}\n\`\`\``;
+    } catch {
+      return `### File: ${filePath}\n(Could not read file)`;
+    }
+  }).join('\n\n');
+
+  const prompt = `You are a senior software engineer performing a precise, grounded code review.
+
+STRICT RULES:
+- Analyze ONLY what is literally present in the source code provided below.
+- NEVER say "I assume", "hypothetically", "I don't have access", or "based on conventions".
+- If a file is empty or unreadable, say: "⚠️ Could not read [filename]" and move on.
+- Be direct and concise. No filler sentences.
+
+---
+
+CONTEXT NAME: "${contextName}"
+
+${fileContents}
+
+---
+
+Respond in exactly this structure:
+
+## Overview
+[2-3 sentences. What does this code actually do, based on what you read.]
+
+## File Breakdown
+[For each file:]
+**[filename]**
+- Purpose: [one line — what this file is responsible for]
+- Exports: [list key exported functions/components/classes]
+- Dependencies: [list imports that matter — libraries, internal modules]
+- Notes: [any real patterns, issues, or things worth flagging in the code]
+
+## Watch Out For
+[2-4 bullet points of actual concerns, TODOs, or code smells found in the source. If none, say "No issues found."]`;
+
+  // Stream response from OpenRouter/Gemini
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+
+  const apiKey = process.env.OPENROUTER_API_KEY || '';
+
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'google/gemini-2.0-flash-001',
+        stream: true,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+
+    if (response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      const readStream = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            res.write(chunk);
+          }
+          res.end();
+        } catch (e) {
+          res.end();
+        }
+      };
+      readStream();
+    } else {
+      res.end();
+    }
+  } catch (err) {
+    res.end();
   }
 });
 

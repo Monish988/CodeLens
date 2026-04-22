@@ -1,471 +1,637 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Bookmark, Search, Plus, Edit3, Trash2, X, FileText, ChevronDown, Zap, MousePointer2, GitBranch } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Bookmark, Search, Plus, Edit3, Trash2, X, FileText, ChevronDown, MousePointer2, Sparkles, Copy, Check } from 'lucide-react';
 import './ContextsPage.css';
 import { apiUrl } from '../api';
 
-const ContextsPage = () => {
-  const navigate = useNavigate();
-  const [contexts, setContexts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
+const COLORS = [
+  { id: 'green', hex: '#39FF14' },
+  { id: 'blue', hex: '#3b82f6' },
+  { id: 'purple', hex: '#a855f7' },
+  { id: 'orange', hex: '#f97316' },
+  { id: 'red', hex: '#ef4444' }
+];
+
+export default function ContextsPage() {
+  const [contexts, setContexts] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('codelens-contexts') || '[]');
+    } catch { return []; }
+  });
   const [selectedContext, setSelectedContext] = useState(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [newContextName, setNewContextName] = useState('');
-  const [newContextNotes, setNewContextNotes] = useState('');
-  
-  // New Modal States
-  const [workspaces, setWorkspaces] = useState([]);
-  const [association, setAssociation] = useState('');
-  const [depth, setDepth] = useState('STANDARD');
-  const [tags, setTags] = useState([]);
-  const [tagInput, setTagInput] = useState('');
-  const [nameError, setNameError] = useState(false);
+  const [filterQuery, setFilterQuery] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+  const searchInputRef = useRef(null);
+  const [loading, setLoading] = useState(true);
+
+  // Modal State
+  const [newName, setNewName] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [newColor, setNewColor] = useState('green');
+  const [newFiles, setNewFiles] = useState([]);
+  const [newFileInput, setNewFileInput] = useState('');
+  const [newNotes, setNewNotes] = useState('');
+  const [nameError, setNameError] = useState(false);
+
+  // Detail Edit State
+  const [isEditingDetails, setIsEditingDetails] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  
+  // Right Panel Inputs
+  const [addFileInput, setAddFileInput] = useState('');
+  const [addSearchInput, setAddSearchInput] = useState('');
+  const [aiSummary, setAiSummary] = useState('');
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+  const [copiedSummary, setCopiedSummary] = useState(false);
+
+  // Autocomplete State
+  const [fileSuggestions, setFileSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const dropdownRef = useRef(null);
 
   useEffect(() => {
-    fetchContexts();
-    fetchWorkspaces();
+    setLoading(false);
   }, []);
 
-  // Keyboard shortcuts
+  useEffect(() => {
+    localStorage.setItem('codelens-contexts', JSON.stringify(contexts));
+  }, [contexts]);
+
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Cmd/Ctrl + K for search focus (We can't easily focus without a ref, but we can set up the listener)
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        document.querySelector('.search-input')?.focus();
+        searchInputRef.current?.focus();
       }
-      // Shift + N for new context
-      if (e.shiftKey && e.key === 'N') {
+      if ((e.metaKey || e.ctrlKey || e.shiftKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
-        setIsModalOpen(true);
+        setIsCreating(true);
+      }
+      if (e.key === 'Escape') {
+        if (isCreating) setIsCreating(false);
+        else setSelectedContext(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCreating]);
+
+  // Autocomplete fetch effect
+  useEffect(() => {
+    if (addFileInput.trim().length < 2) {
+      setFileSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    const timeout = setTimeout(async () => {
+      try {
+        const res = await fetch(apiUrl(`/api/files?q=${encodeURIComponent(addFileInput)}`));
+        const data = await res.json();
+        setFileSuggestions(data.files || []);
+        setShowSuggestions(true);
+      } catch (err) {
+        console.error(err);
+      }
+    }, 200);
+    return () => clearTimeout(timeout);
+  }, [addFileInput]);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const fetchContexts = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(apiUrl('/api/contexts'));
-      const data = await res.json();
-      setContexts(data.contexts || []);
-      if (data.contexts?.length > 0 && !selectedContext) {
-        // Only auto-select if requested or maybe don't auto-select to show empty details state
-        // fetchContextDetails(data.contexts[0].id);
-      }
-    } catch (err) {
-
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchWorkspaces = async () => {
-    try {
-      const res = await fetch(apiUrl('/api/workspaces'));
-      const data = await res.json();
-      setWorkspaces(data.workspaces || []);
-      if (data.workspaces?.length > 0) {
-        setAssociation(data.workspaces[0].path);
-      }
-    } catch (err) {
-
-    }
-  };
-
-  const fetchContextDetails = async (id) => {
-    try {
-      const res = await fetch(apiUrl(`/api/contexts/${id}`));
-      const data = await res.json();
-      setSelectedContext(data);
-    } catch (err) {
-
-    }
-  };
-
-  const handleAddTag = (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      const newTag = tagInput.trim();
-      if (newTag && !tags.includes(newTag)) {
-        setTags([...tags, newTag]);
-      }
-      setTagInput('');
-    }
-  };
-
-  const handleRemoveTag = (tagToRemove) => {
-    setTags(tags.filter(t => t !== tagToRemove));
-  };
-
-  const handleCreateContext = async (e) => {
-    e.preventDefault();
-    if (!newContextName.trim()) {
+  const handleCreateSubmit = (e) => {
+    if (e) e.preventDefault();
+    if (!newName.trim()) {
       setNameError(true);
       return;
     }
+    const newContext = {
+      id: crypto.randomUUID(),
+      name: newName.trim(),
+      description: newDesc.trim(),
+      files: newFiles,
+      searches: [],
+      notes: newNotes.trim(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      color: newColor
+    };
+    const updated = [newContext, ...contexts];
+    setContexts(updated);
+    setSelectedContext(newContext);
+    setIsCreating(false);
+    resetModal();
+  };
 
-    setIsCreating(true);
-    try {
-      const res = await fetch(apiUrl('/api/contexts'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          name: newContextName, 
-          notes: newContextNotes,
-          tags,
-          association,
-          depth
-        })
-      });
-      const data = await res.json();
-      setContexts([data, ...contexts]);
-      setIsModalOpen(false);
-      
-      // Reset state
-      setNewContextName('');
-      setNewContextNotes('');
-      setTags([]);
-      setDepth('STANDARD');
-      setNameError(false);
-      
-      // Navigate to Dashboard with Context ID
-      navigate(`/dashboard?contextId=${data.id}`);
-    } catch (err) {
+  const resetModal = () => {
+    setNewName('');
+    setNewDesc('');
+    setNewColor('green');
+    setNewFiles([]);
+    setNewFileInput('');
+    setNewNotes('');
+    setNameError(false);
+  };
 
-    } finally {
-      setIsCreating(false);
+  const handleModalKeyDown = (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      handleCreateSubmit();
     }
   };
 
-  const handleDeleteContext = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this context?')) return;
-    try {
-      await fetch(apiUrl(`/api/contexts/${id}`), { method: 'DELETE' });
+  const handleAddModalFile = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const val = newFileInput.trim();
+      if (val && !newFiles.includes(val)) {
+        setNewFiles([...newFiles, val]);
+      }
+      setNewFileInput('');
+    }
+  };
+
+  const removeModalFile = (file) => {
+    setNewFiles(newFiles.filter(f => f !== file));
+  };
+
+  const updateContext = (id, updates) => {
+    const updated = contexts.map(c => {
+      if (c.id === id) {
+        const newC = { ...c, ...updates, updatedAt: new Date().toISOString() };
+        if (selectedContext?.id === id) setSelectedContext(newC);
+        return newC;
+      }
+      return c;
+    });
+    setContexts(updated);
+  };
+
+  const deleteContext = (id) => {
+    if (window.confirm('Are you sure you want to delete this context?')) {
       const updated = contexts.filter(c => c.id !== id);
       setContexts(updated);
-      if (selectedContext?.id === id) {
-        setSelectedContext(null);
-      }
-    } catch (err) {
-
+      if (selectedContext?.id === id) setSelectedContext(null);
     }
   };
 
-  const filteredContexts = contexts.filter(c => {
-    const nameMatch = c.name.toLowerCase().includes(searchQuery.toLowerCase());
-    const tagMatch = c.tags && JSON.parse(c.tags).some(t => t.toLowerCase().includes(searchQuery.toLowerCase()));
-    return nameMatch || tagMatch;
-  });
+  // Right Panel Handlers
+  const handleAddFileKeyDown = (e) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedIndex(prev => Math.min(prev + 1, fileSuggestions.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedIndex(prev => Math.max(prev - 1, -1));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (selectedIndex >= 0 && fileSuggestions[selectedIndex]) {
+        const file = fileSuggestions[selectedIndex].path;
+        if (!selectedContext.files.includes(file)) {
+          updateContext(selectedContext.id, { files: [...selectedContext.files, file] });
+        }
+        setAddFileInput('');
+        setShowSuggestions(false);
+        setSelectedIndex(-1);
+      } else if (addFileInput.trim()) {
+        const file = addFileInput.trim();
+        if (!selectedContext.files.includes(file)) {
+          updateContext(selectedContext.id, { files: [...selectedContext.files, file] });
+        }
+        setAddFileInput('');
+        setShowSuggestions(false);
+        setSelectedIndex(-1);
+      }
+    } else if (e.key === 'Escape') {
+      setShowSuggestions(false);
+      setSelectedIndex(-1);
+    }
+  };
+
+  const handleAddFile = (e) => {
+    handleAddFileKeyDown(e);
+  };
+
+  const removeFile = (file) => {
+    updateContext(selectedContext.id, { files: selectedContext.files.filter(f => f !== file) });
+  };
+
+  const handleAddSearch = (e) => {
+    if (e.key === 'Enter' && addSearchInput.trim()) {
+      const search = addSearchInput.trim();
+      if (!selectedContext.searches) selectedContext.searches = [];
+      if (!selectedContext.searches.includes(search)) {
+        updateContext(selectedContext.id, { searches: [...selectedContext.searches, search] });
+      }
+      setAddSearchInput('');
+    }
+  };
+
+  const removeSearch = (search) => {
+    updateContext(selectedContext.id, { searches: selectedContext.searches.filter(s => s !== search) });
+  };
+
+  const handleNotesBlur = (e) => {
+    updateContext(selectedContext.id, { notes: e.target.value });
+  };
+
+  const handleGenerateSummary = async () => {
+    if (!selectedContext?.files?.length) return;
+    setAiSummary('');
+    setIsGeneratingSummary(true);
+    setCopiedSummary(false);
+
+    let finalSummaryText = '';
+
+    try {
+      const res = await fetch(apiUrl('/api/contexts/summary'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: selectedContext.files,
+          contextName: selectedContext.name
+        })
+      });
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value);
+        
+        const lines = chunk.split('\n').filter(l => l.startsWith('data:'));
+        for (const line of lines) {
+          const json = line.replace('data: ', '').trim();
+          if (json === '[DONE]') break;
+          try {
+            const parsed = JSON.parse(json);
+            const token = parsed.choices?.[0]?.delta?.content || '';
+            finalSummaryText += token;
+            setAiSummary(prev => prev + token);
+          } catch {}
+        }
+      }
+    } catch (e) {
+      finalSummaryText = 'Error generating summary: ' + e.message;
+      setAiSummary(finalSummaryText);
+    } finally {
+      setIsGeneratingSummary(false);
+      updateContext(selectedContext.id, { cachedSummary: finalSummaryText });
+    }
+  };
+
+  const copySummaryToClipboard = () => {
+    navigator.clipboard.writeText(aiSummary);
+    setCopiedSummary(true);
+    setTimeout(() => setCopiedSummary(false), 2000);
+  };
+
+  const filteredContexts = contexts.filter(c => 
+    c.name.toLowerCase().includes(filterQuery.toLowerCase()) || 
+    (c.description || '').toLowerCase().includes(filterQuery.toLowerCase())
+  );
 
   return (
-    <div className="contexts-container">
-      {/* Main Content Area */}
-      <div className="contexts-main">
-        {/* Top Toolbar */}
-        <div className="contexts-toolbar">
-          <div className="page-title">
-            <Bookmark size={18} className="title-icon" />
-            <span className="bold">Saved Contexts</span>
+    <div className="contexts-wrapper" onKeyDown={handleModalKeyDown}>
+      {/* Center Panel */}
+      <div className="contexts-center">
+        {/* Toolbar */}
+        <div className="c-toolbar">
+          <div className="c-toolbar-left">
+            <Bookmark size={18} className="text-muted" />
+            <span className="c-toolbar-title">Saved Contexts</span>
           </div>
-          
-          <div className="toolbar-right">
-            <div className="search-input-wrapper">
-              <Search size={14} className="search-icon" />
+          <div className="c-toolbar-right">
+            <div className="c-search-wrapper">
+              <Search size={14} className="c-search-icon" />
               <input 
+                ref={searchInputRef}
                 type="text" 
-                className="search-input" 
                 placeholder="Filter contexts... (⌘K)" 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                value={filterQuery}
+                onChange={(e) => setFilterQuery(e.target.value)}
+                className="c-search-input"
               />
             </div>
-            <button className="primary-sm-btn" onClick={() => setIsModalOpen(true)}>
+            <button className="btn-new" onClick={() => setIsCreating(true)}>
               <Plus size={14} /> New Context
             </button>
           </div>
         </div>
 
-        {/* Content Area */}
-        <div className="contexts-content-area">
-          {loading ? (
-            <div className="loading-state">Loading contexts...</div>
-          ) : contexts.length === 0 ? (
-            <div className="contexts-empty-state">
-              <div className="empty-icon-stack">
-                <Bookmark size={48} className="base-icon" />
-                <div className="plus-badge"><Plus size={20} /></div>
-              </div>
-              <h3>No saved contexts yet</h3>
-              <p>Group files, searches, and terminal outputs into reusable contexts for faster debugging.</p>
-              <button className="primary-action-btn" onClick={() => setIsModalOpen(true)}>
-                <Zap size={16} /> Create Your First Context
-              </button>
-              <div className="shortcut-hints">
-                <span><kbd>⌘</kbd> <kbd>K</kbd> to search</span>
-                <span><kbd>⇧</kbd> <kbd>N</kbd> for a new context</span>
-              </div>
+        {/* Content */}
+        {contexts.length === 0 && !loading ? (
+          <div className="c-empty">
+            <div className="c-empty-icon-wrap">
+              <Bookmark size={48} className="c-empty-icon" />
+              <div className="c-empty-badge"><Plus size={16} /></div>
             </div>
-          ) : (
-            <>
-              <div className="contexts-filters">
-                <button className="filter-select">Sort: Recent <ChevronDown size={14} /></button>
-                <button className="filter-tag-btn">Tags</button>
-              </div>
-
-              {filteredContexts.length === 0 ? (
-                <div className="empty-state">No contexts match your filter.</div>
-              ) : (
-                <div className="contexts-grid">
-                  {filteredContexts.map(c => (
-                    <div 
-                      key={c.id} 
-                      className={`context-card ${selectedContext?.id === c.id ? 'active' : ''}`}
-                      onClick={() => fetchContextDetails(c.id)}
-                    >
-                      <div className="card-header">
-                        <div className="card-title-row">
-                          <FolderIcon gray={selectedContext?.id !== c.id} />
-                          <span className="card-title">{c.name}</span>
-                          <button 
-                            className="more-btn" 
-                            onClick={(e) => { e.stopPropagation(); handleDeleteContext(c.id); }}
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                        <span className="card-date">
-                          {new Date(c.created_at).toLocaleDateString()}
-                        </span>
-                      </div>
-                      
-                      <div className="card-tags">
-                        {c.tags && JSON.parse(c.tags).map(t => (
-                          <span key={t} className="tag">{t}</span>
-                        ))}
-                      </div>
-                      
-                      <div className="card-stats">
-                        <div className="stat-row">
-                          <span>Active Items</span>
-                          <span>{c.item_count || 0}</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* Status Footer */}
-        <div className="status-footer">
-          <div className="status-left">
-            <span className="status-item ready">System Ready</span>
-            <span className="status-item branch"><GitBranch size={12} /> main*</span>
-          </div>
-          <div className="status-right">
-            <span className="status-item">UTF-8</span>
-            <span className="status-item">{contexts.length} Contexts</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Right Sidebar - Context Details */}
-      <div className="context-details-sidebar">
-        <div className="sidebar-header">
-          <span className="sidebar-title">CONTEXT DETAILS</span>
-        </div>
-        
-        {selectedContext ? (
-          <div className="sidebar-content-wrapper">
-            <div className="details-header">
-              <h2>{selectedContext.name}</h2>
-              <div className="details-actions">
-                <button className="icon-btn"><Edit3 size={16} /></button>
-                <button className="icon-btn" onClick={() => handleDeleteContext(selectedContext.id)}>
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            </div>
-
-            <div className="details-content">
-              <div className="section">
-                <div className="section-title">NOTES</div>
-                <div className="notes-box">
-                  {selectedContext.notes || 'No notes provided for this context.'}
-                </div>
-              </div>
-
-              <div className="section">
-                <div className="section-title-row">
-                  <div className="section-title">
-                    PINNED SNIPPETS ({selectedContext.items?.filter(i => i.type === 'snippet').length || 0})
-                  </div>
-                </div>
-                
-                <div className="snippets-list">
-                  {selectedContext.items?.filter(i => i.type === 'snippet').map(item => (
-                    <div key={item.id} className="snippet-box">
-                      <div className="snippet-header">
-                        <span className="snippet-path">{item.file_path}</span>
-                        <button className="close-btn"><X size={14} /></button>
-                      </div>
-                      <pre className="snippet-code">
-                        {item.code_content}
-                      </pre>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="section">
-                <div className="section-title-row">
-                  <div className="section-title">
-                    FILES ({selectedContext.items?.filter(i => i.type === 'file').length || 0})
-                  </div>
-                </div>
-                
-                <div className="files-box">
-                  {selectedContext.items?.filter(i => i.type === 'file').map(item => (
-                    <div key={item.id} className="file-item">
-                      <FileText size={14} className="file-icon" />
-                      <span>{item.file_path}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="details-footer">
-              <button 
-                className="primary-search-btn full-width"
-                onClick={() => navigate(`/dashboard?contextId=${selectedContext.id}`)}
-              >
-                <Search size={16} /> Search with Context
-              </button>
+            <h2 className="c-empty-title">No saved contexts yet</h2>
+            <p className="c-empty-desc">Group files, searches, and terminal outputs into reusable contexts for faster debugging.</p>
+            <button className="btn-cta" onClick={() => setIsCreating(true)}>
+              <Plus size={16} /> Create Your First Context
+            </button>
+            <div className="c-keyboard-hints">
+              <div className="c-hint"><kbd>⌘ K</kbd> to search</div>
+              <div className="c-hint"><kbd>↑ N</kbd> for a new context</div>
             </div>
           </div>
         ) : (
-          <div className="sidebar-empty">
-            <MousePointer2 size={32} className="empty-pointer-icon" />
-            <p>Select a context to view details</p>
+          <div className="c-list">
+            {filteredContexts.map(c => (
+              <div 
+                key={c.id} 
+                className={`c-card ${selectedContext?.id === c.id ? 'active' : ''}`}
+                onClick={() => { setSelectedContext(c); setAiSummary(c.cachedSummary || ''); setIsEditingDetails(false); }}
+                style={{ '--card-color': COLORS.find(col => col.id === c.color)?.hex || '#aaff00' }}
+              >
+                <div className="c-card-bar" />
+                <div className="c-card-content">
+                  <div className="c-card-top">
+                    <span className="c-card-name">{c.name}</span>
+                    <span className="c-card-date">{new Date(c.updatedAt).toLocaleDateString()}</span>
+                  </div>
+                  {c.description && <div className="c-card-desc">{c.description}</div>}
+                  <div className="c-card-bottom">
+                    <span className="c-card-badge">{c.files?.length || 0} files</span>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
 
-      {/* New Context Modal */}
-      {isModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <div className="modal-header">
-              <h3>Create New Context</h3>
-              <button onClick={() => setIsModalOpen(false)}><X size={18} /></button>
-            </div>
-            <form onSubmit={handleCreateContext}>
-              <div className="form-group">
-                <label>Context Name <span style={{color: '#ef4444'}}>*</span></label>
-                <input 
-                  type="text" 
-                  autoFocus
-                  className={nameError ? 'input-error' : ''}
-                  placeholder="e.g., Auth Flow Migration"
-                  value={newContextName}
-                  onChange={(e) => {
-                    setNewContextName(e.target.value);
-                    if (e.target.value.trim()) setNameError(false);
-                  }}
-                  disabled={isCreating}
+      {/* Right Panel */}
+      <div className="contexts-right">
+        <div className="r-header">CONTEXT DETAILS</div>
+        
+        {!selectedContext ? (
+          <div className="r-empty">
+            <MousePointer2 size={32} className="r-empty-icon" />
+            <span>Select a context to view details</span>
+          </div>
+        ) : (
+          <div className="r-content">
+            <div className="r-details-header">
+              <div className="r-title-row">
+                <div className="r-title-left">
+                  <div className="r-color-dot" style={{ backgroundColor: COLORS.find(col => col.id === selectedContext.color)?.hex || '#aaff00' }} />
+                  {isEditingDetails ? (
+                    <input 
+                      type="text" 
+                      value={editName} 
+                      onChange={e => setEditName(e.target.value)} 
+                      onBlur={() => { updateContext(selectedContext.id, { name: editName }); setIsEditingDetails(false); }}
+                      onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                      autoFocus
+                      className="r-edit-name"
+                    />
+                  ) : (
+                    <h2 className="r-title-text">{selectedContext.name}</h2>
+                  )}
+                </div>
+                <div className="r-actions">
+                  <button className="r-icon-btn" onClick={() => {
+                    setIsEditingDetails(!isEditingDetails);
+                    setEditName(selectedContext.name);
+                    setEditDesc(selectedContext.description || '');
+                  }}>
+                    <Edit3 size={14} />
+                  </button>
+                  <button className="r-icon-btn" onClick={() => deleteContext(selectedContext.id)}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+              
+              {isEditingDetails ? (
+                <textarea 
+                  className="r-edit-desc"
+                  value={editDesc}
+                  onChange={e => setEditDesc(e.target.value)}
+                  onBlur={() => updateContext(selectedContext.id, { description: editDesc })}
+                  placeholder="Add a description..."
                 />
-                {nameError && <span className="error-text">Context name is required</span>}
+              ) : (
+                <p className="r-desc">{selectedContext.description || <span className="r-muted-italic">No description</span>}</p>
+              )}
+              
+              <div className="r-stats">
+                Files: {selectedContext.files?.length || 0} | Searches: {selectedContext.searches?.length || 0}
               </div>
+            </div>
 
-              <div className="form-group">
-                <label>Project / Repo Association</label>
-                <select 
-                  className="select-input"
-                  value={association} 
-                  onChange={(e) => setAssociation(e.target.value)}
-                  disabled={isCreating}
-                >
-                  <option value="">No association</option>
-                  {workspaces.map(ws => (
-                    <option key={ws.path} value={ws.path}>{ws.path}</option>
+            <div className="r-sections">
+              <div className="r-section">
+                <div className="r-section-label">FILES</div>
+                <div className="r-item-list">
+                  {(selectedContext.files || []).map((f, i) => (
+                    <div key={i} className="r-item">
+                      <FileText size={14} className="r-item-icon" />
+                      <span className="r-item-text" title={f}>{f}</span>
+                      <button className="r-item-remove" onClick={() => removeFile(f)}><X size={14} /></button>
+                    </div>
                   ))}
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label>Analysis Depth</label>
-                <div className="segmented-control">
-                  {['SHALLOW', 'STANDARD', 'SURGICAL'].map(d => (
-                    <button 
-                      key={d} 
-                      type="button"
-                      className={`segment-btn ${depth === d ? 'active' : ''}`}
-                      onClick={() => setDepth(d)}
-                      disabled={isCreating}
-                    >
-                      {d}
-                    </button>
-                  ))}
+                  <div className="r-file-input-wrapper" ref={dropdownRef}>
+                    <input 
+                      type="text" 
+                      className="r-inline-input" 
+                      placeholder="+ Add file..."
+                      value={addFileInput}
+                      onChange={(e) => {
+                        setAddFileInput(e.target.value);
+                        setSelectedIndex(-1);
+                      }}
+                      onKeyDown={handleAddFile}
+                    />
+                    {showSuggestions && addFileInput.length >= 2 && (
+                      <div className="suggestions-dropdown">
+                        {fileSuggestions.length === 0 ? (
+                          <div className="suggestion-item muted">No files found</div>
+                        ) : (
+                          fileSuggestions.map((s, i) => (
+                            <div 
+                              key={i} 
+                              className={`suggestion-item ${i === selectedIndex ? 'selected' : ''}`}
+                              onClick={() => {
+                                if (!selectedContext.files.includes(s.path)) {
+                                  updateContext(selectedContext.id, { files: [...selectedContext.files, s.path] });
+                                }
+                                setAddFileInput('');
+                                setShowSuggestions(false);
+                              }}
+                            >
+                              <div className="s-icon">
+                                {(s.language === 'jsx' || s.language === 'js') ? <FileText size={12} color="#39FF14" /> :
+                                 (s.language === 'ts' || s.language === 'tsx') ? <FileText size={12} color="#3b82f6" /> :
+                                 <FileText size={12} color="#facc15" />}
+                              </div>
+                              <span className="s-name">{s.name || s.path.split('/').pop()}</span>
+                              <span className="s-path" title={s.path}>...{s.path.slice(-30)}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              <div className="form-group">
-                <label>Tags</label>
-                <div className="tags-input-container">
-                  {tags.map(t => (
-                    <span key={t} className="tag-pill">
-                      {t}
-                      <button type="button" onClick={() => handleRemoveTag(t)} disabled={isCreating}><X size={12} /></button>
-                    </span>
+              <div className="r-section">
+                <div className="r-section-label">SEARCHES</div>
+                <div className="r-item-list">
+                  {(selectedContext.searches || []).map((s, i) => (
+                    <div key={i} className="r-item">
+                      <Search size={14} className="r-item-icon" />
+                      <span className="r-item-text" title={s}>{s}</span>
+                      <button className="r-item-remove" onClick={() => removeSearch(s)}><X size={14} /></button>
+                    </div>
                   ))}
                   <input 
                     type="text" 
-                    className="tag-input"
-                    placeholder="Add tag (press Enter)"
-                    value={tagInput}
-                    onChange={(e) => setTagInput(e.target.value)}
-                    onKeyDown={handleAddTag}
-                    disabled={isCreating}
+                    className="r-inline-input" 
+                    placeholder="+ Add search..."
+                    value={addSearchInput}
+                    onChange={(e) => setAddSearchInput(e.target.value)}
+                    onKeyDown={handleAddSearch}
                   />
                 </div>
               </div>
 
-              <div className="form-group">
-                <label>Investigation Notes (Optional)</label>
+              <div className="r-section">
+                <div className="r-section-label">NOTES</div>
                 <textarea 
-                  placeholder="What is this investigation bucket for?"
-                  maxLength={280}
-                  value={newContextNotes}
-                  onChange={(e) => setNewContextNotes(e.target.value)}
-                  disabled={isCreating}
+                  className="r-notes-input"
+                  defaultValue={selectedContext.notes}
+                  onBlur={handleNotesBlur}
+                  placeholder="Freeform markdown notes..."
                 />
               </div>
-              <div className="modal-footer">
-                <button type="button" className="secondary-btn" onClick={() => setIsModalOpen(false)} disabled={isCreating}>Cancel</button>
-                <button type="submit" className="primary-btn" disabled={isCreating}>
-                  {isCreating ? 'Creating...' : 'Create Context'}
-                </button>
+            </div>
+
+            <div className="r-footer">
+              <button 
+                className="btn-summary" 
+                onClick={handleGenerateSummary} 
+                disabled={isGeneratingSummary || !selectedContext?.files?.length}
+                title={!selectedContext?.files?.length ? "Add files to this context first" : ""}
+              >
+                <Sparkles size={16} /> 
+                {isGeneratingSummary ? 'Generating...' : (aiSummary ? 'Regenerate Summary' : 'Generate AI Summary')}
+              </button>
+              {(aiSummary || isGeneratingSummary) && (
+                <div className="ai-summary-box">
+                  <div className="ai-summary-header">
+                    <span className="ai-label"></span>
+                    {aiSummary && !isGeneratingSummary && (
+                      <button className="btn-copy-summary" onClick={copySummaryToClipboard} title="Copy to clipboard">
+                        {copiedSummary ? <Check size={14} color="#39FF14" /> : <Copy size={14} />}
+                      </button>
+                    )}
+                  </div>
+                  <div className="ai-summary-content">
+                    {aiSummary}
+                    {isGeneratingSummary && <span className="blinking-cursor">▋</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Creation Modal */}
+      {isCreating && (
+        <div className="m-backdrop" onClick={() => setIsCreating(false)}>
+          <div className="m-container" onClick={e => e.stopPropagation()}>
+            <h3 className="m-title">Create New Context</h3>
+            
+            <div className="m-field">
+              <label>Name</label>
+              <input 
+                type="text" 
+                autoFocus
+                placeholder="Context name"
+                value={newName}
+                onChange={e => { setNewName(e.target.value); setNameError(false); }}
+                className={nameError ? 'm-input-error' : ''}
+              />
+            </div>
+            
+            <div className="m-field">
+              <label>Description</label>
+              <textarea 
+                placeholder="Optional description" 
+                rows={3}
+                value={newDesc}
+                onChange={e => setNewDesc(e.target.value)}
+              />
+            </div>
+            
+            <div className="m-field">
+              <label>Color</label>
+              <div className="m-colors">
+                {COLORS.map(c => (
+                  <button 
+                    key={c.id} 
+                    className={`m-color-btn ${newColor === c.id ? 'selected' : ''}`}
+                    style={{ backgroundColor: c.hex }}
+                    onClick={() => setNewColor(c.id)}
+                    type="button"
+                  />
+                ))}
               </div>
-            </form>
+            </div>
+            
+            <div className="m-field">
+              <label>Add Files</label>
+              <div className="m-files-wrapper">
+                <div className="m-pills">
+                  {newFiles.map(f => (
+                    <div key={f} className="m-pill">
+                      {f} <X size={12} onClick={() => removeModalFile(f)} className="m-pill-remove" />
+                    </div>
+                  ))}
+                </div>
+                <input 
+                  type="text" 
+                  placeholder="Type path and press Enter..." 
+                  value={newFileInput}
+                  onChange={e => setNewFileInput(e.target.value)}
+                  onKeyDown={handleAddModalFile}
+                  className="m-file-input"
+                />
+              </div>
+            </div>
+            
+            <div className="m-field">
+              <label>Notes</label>
+              <textarea 
+                placeholder="Markdown notes..." 
+                rows={3}
+                value={newNotes}
+                onChange={e => setNewNotes(e.target.value)}
+                className="m-notes"
+              />
+            </div>
+            
+            <div className="m-actions">
+              <button className="btn-cancel" onClick={() => setIsCreating(false)}>Cancel</button>
+              <button className="btn-create" onClick={handleCreateSubmit}>Create Context</button>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
-};
-
-const FolderIcon = ({ gray }) => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={gray ? "var(--text-muted)" : "var(--accent-green)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-  </svg>
-);
-
-export default ContextsPage;
-
+}

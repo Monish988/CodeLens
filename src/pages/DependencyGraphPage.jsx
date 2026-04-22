@@ -256,6 +256,8 @@ const GraphInner = () => {
 
   // ── Layout & filter edges ──────────────────────────────────────────────
 
+  const pendingJumpRef = useRef(null);
+
   useEffect(() => {
     if (!rawNodes.length) { setNodes([]); setEdges([]); return; }
     const visIds = new Set(rawNodes.map(n => n.id));
@@ -265,8 +267,37 @@ const GraphInner = () => {
     const laid = applyDagreLayout(rawNodes, filtEdges, direction);
     setNodes(laid);
     setEdges(filtEdges);
-    setTimeout(() => fitView({ padding: 0.2, duration: 400 }), 80);
-  }, [rawNodes, rawEdges, relFilters, direction]); // eslint-disable-line
+
+    if (pendingJumpRef.current) {
+      const nid = pendingJumpRef.current;
+      pendingJumpRef.current = null;
+      setTimeout(() => {
+        const target = laid.find(n => n.id === nid);
+        if (target) {
+          setCenter(target.position.x + NODE_W / 2, target.position.y + NODE_H / 2, { zoom: 1.5, duration: 700 });
+          
+          const neighborIds = new Set();
+          filtEdges.forEach(e => {
+            if (e.source === nid) neighborIds.add(e.target);
+            if (e.target === nid) neighborIds.add(e.source);
+          });
+
+          setNodes(ns => ns.map(n => ({ 
+            ...n, 
+            selected: n.id === nid,
+            className: (n.id === nid || neighborIds.has(n.id)) ? 'rf-node-focus' : 'rf-node-dimmed'
+          })));
+          
+          // Trigger inspector manually
+          onNodeClick(null, target);
+        } else {
+          fitView({ padding: 0.2, duration: 400 });
+        }
+      }, 100);
+    } else {
+      setTimeout(() => fitView({ padding: 0.2, duration: 400 }), 80);
+    }
+  }, [rawNodes, rawEdges, relFilters, direction, fitView, setCenter, setNodes]);
 
   // Refit when inspector width changes
   useEffect(() => {
@@ -382,13 +413,24 @@ const GraphInner = () => {
   };
 
   const jumpTo = result => {
-    const nid = `e_${result.id}`;
-    const target = nodes.find(n => n.id === nid);
-    if (target) {
-      setCenter(target.position.x + NODE_W / 2, target.position.y + NODE_H / 2, { zoom: 1.5, duration: 700 });
-      setNodes(ns => ns.map(n => ({ ...n, selected: n.id === nid })));
-      highlightNeighbors(nid);
+    const nid = result.type === 'file' ? `f_${result.file_id}` : `e_${result.id}`;
+    
+    // If the node type is currently filtered out, enable it and wait for refetch
+    if (result.type !== 'file' && !typeFilters[result.type]) {
+      pendingJumpRef.current = nid;
+      setTypeFilters(prev => ({ ...prev, [result.type]: true }));
+    } else {
+      const target = nodes.find(n => n.id === nid);
+      if (target) {
+        setCenter(target.position.x + NODE_W / 2, target.position.y + NODE_H / 2, { zoom: 1.5, duration: 700 });
+        setNodes(ns => ns.map(n => ({ ...n, selected: n.id === nid })));
+        highlightNeighbors(nid);
+        onNodeClick(null, target);
+      } else {
+        alert("Node not found in current graph depth.");
+      }
     }
+    
     setSearchResults([]);
     setSearchQ('');
   };
