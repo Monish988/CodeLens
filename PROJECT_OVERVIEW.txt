@@ -10,23 +10,27 @@ CodeLENS is a high-performance, local-first developer tool designed for deep cod
 2.  **Indexing & Parsing**: 
     - The backend scans the directory (using `chokidar` for real-time updates).
     - Files are parsed via `Tree-sitter` to extract entities (definitions and references).
-    - Data is indexed into a local `SQLite` database with FTS5 for instant searching.
-3.  **Exploration**: 
-    - Users can search for specific identifiers or browse the file system.
-    - AI-driven overviews (via Gemini) provide high-level summaries of complex files or components.
-4.  **Visualization**:
-    - The tool generates dependency graphs using `XYFlow` (React Flow) to show how different parts of the code interact.
+    - Data is indexed into a local `SQLite` database with FTS5 for sub-100ms searching.
+3.  **Global Search & Dashboard**: 
+    - Full-text search with keyword highlighting and snippet previews.
+    - Result rankings prioritized by entity type (Functions > Classes > Variables).
+4.  **Visual Dependency Analysis**:
+    - Generates interactive graphs using `XYFlow` (React Flow) to visualize call chains.
+    - Supports deep node navigation, automatic filter toggling, and neighborhood highlighting.
 5.  **Context Management**: 
-    - Users can group related files into "Contexts" to narrow down search results and generate focused architectural summaries.
+    - Group related files into "Context Buckets" to focus AI analysis and narrow search scope.
+6.  **Search History**:
+    - Persistent tracking of all queries, result counts, and timestamps in `localStorage`.
+    - One-click "Re-run Search" functionality from the dedicated History page.
 
 ---
 
 ## 3. Technology Stack
 - **Frontend**: React 19, Vite, XYFlow (React Flow), Lucide React.
 - **Backend**: Node.js (Express), TypeScript, `tsx`.
-- **Database**: SQLite (via `better-sqlite3`) for metadata and FTS5 search.
-- **Code Analysis**: `Tree-sitter` for multi-language AST parsing.
-- **AI**: Gemini 2.0 (via OpenRouter) for intelligent code summaries.
+- **Database**: SQLite (`better-sqlite3`) with FTS5 virtual tables and advanced JOIN logic for metadata retrieval.
+- **Code Analysis**: `Tree-sitter` for robust AST parsing across JS/TS/JSX/TSX.
+- **AI**: Gemini 2.0 (via OpenRouter) for context-aware architectural summaries.
 
 ---
 
@@ -34,34 +38,29 @@ CodeLENS is a high-performance, local-first developer tool designed for deep cod
 
 ### Root Directory
 - `/README.md`: Primary documentation for setup and usage.
-- `/package.json`: Project metadata, dependencies, and execution scripts.
-- `/vite.config.js`: Configuration for the Vite frontend build tool.
-- `/codelens.db`: The local SQLite database storing all indexed code metadata.
-- `/PRD.txt`: Detailed product requirements and technical specifications.
+- `/PROJECT_OVERVIEW.txt`: (This file) Architectural map and workflow summary.
+- `/codelens.db`: Local SQLite database storing all indexed structural metadata.
 
 ### src/backend (The Logic Layer)
-- `server.ts`: The main Express server. It handles API requests for search, indexing status, graph generation, and AI summaries.
-- `/db/connection.ts`: Manages the SQLite database connection, table initialization, and query execution logic.
-- `/indexer/Indexer.ts`: Orchestrates the file system crawling, watching for changes, and triggering the parsing pipeline.
-- `/indexer/Parser.ts`: The core analysis engine. It uses Tree-sitter to break down source code into a structured format the database can understand.
-- `/utils/pathSafety.ts`: Utility for ensuring file paths are handled securely and stay within the workspace boundaries.
+- `server.ts`: Express API layer handling search, indexing status, and graph generation.
+- `/db/connection.ts`: Database schema definition and migration logic.
+- `/indexer/Indexer.ts`: Orchestrates file system watching and the parsing pipeline.
+- `/indexer/Parser.ts`: Language-aware analysis engine using Tree-sitter.
 
 ### src/pages (The UI Layer)
-- `SelectWorkspacePage.jsx`: The onboarding screen where users pick which project to analyze.
-- `DashboardPage.jsx`: Provides a high-level overview of the indexed codebase, statistics, and recent activity.
-- `ExplorePage.jsx`: A dual-pane interface with a file browser and a search engine optimized for code identifiers.
-- `DependencyGraphPage.jsx`: An interactive canvas for visualizing call chains and module relationships.
-- `ContextsPage.jsx`: Allows users to create and manage "Context Buckets" for focused AI analysis.
-- `HistoryPage.jsx`: Tracks recent searches and navigation history for quick retrieval.
-- `SettingsPage.jsx`: Interface for configuring API keys and application preferences.
+- `DashboardPage.jsx`: Central search hub with high-fidelity result cards and snippet highlighting.
+- `ExplorePage.jsx`: Dual-pane file browser and symbol outline explorer.
+- `DependencyGraphPage.jsx`: Advanced graph visualization with smart navigation and auto-focus logic.
+- `HistoryPage.jsx`: Interactive history manager with statistics, filters, and JSON export.
+- `ContextsPage.jsx`: Workspace subset manager for targeted analysis.
 
 ### src/components (Reusable Elements)
-- `/layout/Layout.jsx`: The core application shell including the sidebar navigation and persistent status bars.
-- `/ui/`: (Directory for small, reusable UI components like buttons and inputs).
+- `/layout/Layout.jsx`: Main application shell with sidebar navigation.
+- `/ui/`: Atomic UI components (Buttons, Modals, Cards, Badges).
 
 ---
 
 ## 5. Development Commands
-- `npm run dev:all`: Starts both the Express backend and the Vite frontend simultaneously.
-- `npm run server`: Runs only the backend server.
-- `npm run dev`: Runs only the frontend development server.
+- `npm run dev:all`: Concurrent execution of Vite frontend and Express backend.
+- `npm run server`: Dedicated backend runner.
+- `npm run dev`: Dedicated frontend runner.

@@ -137,6 +137,7 @@ app.get('/api/progress', (req, res) => {
 app.get('/api/search', (req, res) => {
   const query = req.query.q as string;
   const contextId = req.query.contextId ? parseInt(req.query.contextId as string) : null;
+  const mode = (req.query.mode as string) || 'symbol';
   
   if (!query) {
     return res.json({ results: [] });
@@ -152,18 +153,25 @@ app.get('/api/search', (req, res) => {
       contextPaths = items.map(i => i.file_path);
     }
 
+    const matchQuery = mode === 'symbol' ? `{name} : "${query}"*` : `"${query}"*`;
+
     // FTS5 MATCH query. 
     // If contextPaths exist, we boost them by checking f.path against the list.
     const stmt = db.prepare(`
-      SELECT s.name, s.content, s.type, f.path, s.file_id, e.start_line as line
+      SELECT s.name, s.content, s.type, f.path, s.file_id, e.start_line as line,
+             snippet(search_index, 1, '<span style="color: #fff; background-color: #2a3a1a">', '</span>', '...', 15) as highlighted_snippet
       FROM search_index s
       JOIN files f ON s.file_id = f.id
       LEFT JOIN entities e ON e.file_id = s.file_id AND e.name = s.name AND e.type = s.type
       WHERE search_index MATCH ?
       ORDER BY 
-        -- Priority 1: Files in the active context
+        -- Priority 0: Files in the active context
         CASE WHEN f.path IN (${contextPaths.map(() => '?').join(',') || "''"}) THEN 0 ELSE 1 END,
-        -- Priority 2: Entity type ranking
+        -- Priority 1: Exact Match
+        CASE WHEN s.name = ? THEN 0 ELSE 1 END,
+        -- Priority 2: Starts With
+        CASE WHEN s.name LIKE ? THEN 0 ELSE 1 END,
+        -- Priority 3: Entity type ranking
         CASE s.type
           WHEN 'function' THEN 1
           WHEN 'class' THEN 2
@@ -173,7 +181,7 @@ app.get('/api/search', (req, res) => {
       LIMIT 50
     `);
 
-    const results = stmt.all(`"${query}"*`, ...contextPaths);
+    const results = stmt.all(matchQuery, ...contextPaths, query, `${query}%`);
     res.json({ results });
   } catch (error) {
     console.error('Search error:', error);

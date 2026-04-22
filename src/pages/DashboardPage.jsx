@@ -21,6 +21,10 @@ const HighlightedSnippet = ({ text, query }) => {
 };
 
 const ResultCard = ({ result, isSelected, onClick, searchQuery }) => {
+  const displayName = result.name === 'anonymous' 
+    ? (result.content ? result.content.split('\n')[0].slice(0, 40) + '...' : 'anonymous')
+    : (result.name || result.path?.split(/[/\\]/).pop());
+
   return (
     <div
       onClick={onClick}
@@ -41,7 +45,7 @@ const ResultCard = ({ result, isSelected, onClick, searchQuery }) => {
         overflow: 'hidden',
         textOverflow: 'ellipsis'
       }}>
-        {result.name || result.path?.split('/').pop() || result.path?.split('\\').pop()}
+        {displayName}
       </div>
 
       <div style={{
@@ -57,20 +61,25 @@ const ResultCard = ({ result, isSelected, onClick, searchQuery }) => {
             {result.line}
           </span>
         )}
-        <HighlightedSnippet 
-          text={result.content || ''} 
-          query={searchQuery} 
-        />
+        {result.highlighted_snippet ? (
+          <span dangerouslySetInnerHTML={{ __html: result.highlighted_snippet.replace(/\n/g, ' ') }} />
+        ) : (
+          <HighlightedSnippet 
+            text={result.content || ''} 
+            query={searchQuery} 
+          />
+        )}
       </div>
     </div>
   );
 };
-
 const DashboardPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const contextId = searchParams.get('contextId');
+  const initialQuery = searchParams.get('q') || '';
   
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery);
+  const [searchMode, setSearchMode] = useState('symbol');
   const [results, setResults] = useState([]);
   const [selectedResult, setSelectedResult] = useState(null);
   const [fileContent, setFileContent] = useState('');
@@ -112,6 +121,7 @@ const DashboardPage = () => {
       try {
         const url = new URL(apiUrl('/api/search'), window.location.origin);
         url.searchParams.append('q', query);
+        url.searchParams.append('mode', searchMode);
         if (contextId) url.searchParams.append('contextId', contextId);
 
         const res = await fetch(url);
@@ -134,7 +144,7 @@ const DashboardPage = () => {
 
     const timer = setTimeout(fetchSearch, 200);
     return () => clearTimeout(timer);
-  }, [query, contextId]);
+  }, [query, contextId, searchMode]);
 
   const handleSelectResult = async (result) => {
     setSelectedResult(result);
@@ -184,8 +194,18 @@ const DashboardPage = () => {
           />
           
           <div className="search-mode-toggle">
-            <button className="mode-btn active">Keyword</button>
-            <button className="mode-btn">Semantic</button>
+            <button 
+              className={`mode-btn ${searchMode === 'symbol' ? 'active' : ''}`}
+              onClick={() => setSearchMode('symbol')}
+            >
+              Symbol Search
+            </button>
+            <button 
+              className={`mode-btn ${searchMode === 'global' ? 'active' : ''}`}
+              onClick={() => setSearchMode('global')}
+            >
+              Global Search
+            </button>
           </div>
           
           <div className="workspace-badge">
