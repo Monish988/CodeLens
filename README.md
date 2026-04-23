@@ -11,9 +11,11 @@ CodeLENS is a local-first developer tool for structured code search and architec
 ## Features
 
 ### Dependency Visualization
+![Dependency Graph](./src/assets/Screenshot_23-Apr_09-43-13_25455.png)
 Generates interactive graphs to show relationships between code entities. You can trace call chains, explore imports, and visualize module dependencies to understand the overall architecture.
 
 ### Entity-Aware Search
+![Search Results](./src/assets/Screenshot_23-Apr_09-40-15_28400.png)
 The search engine is optimized for software identifiers, supporting snake_case and camelCase tokenization. It ranks results based on structural importance and definitions.
 
 ### Incremental Background Indexing
@@ -21,6 +23,18 @@ Monitors your workspace for file changes using `chokidar` and updates the index 
 
 ### AI-Driven Overviews
 Integrates with Gemini via OpenRouter to provide technical summaries of components. These summaries explain the purpose and context of code snippets to speed up onboarding and reviews.
+
+### Workspace Exploration
+![Workspace Exploration](./src/assets/Screenshot_23-Apr_09-40-49_16632.png)
+Navigate your codebase with an integrated file explorer and code viewer, providing immediate context for any selected entity.
+
+### Search History & Insights
+![Search History](./src/assets/Screenshot_23-Apr_09-41-15_9373.png)
+Keep track of your exploration journey with a detailed search history and statistics on workspace composition.
+
+### Saved Contexts
+![Saved Contexts](./src/assets/Screenshot_23-Apr_09-41-58_19728.png)
+Organize your research into logical contexts, allowing you to quickly switch between different feature areas or architectural layers.
 
 ## System Architecture
 
