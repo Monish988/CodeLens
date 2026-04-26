@@ -6,6 +6,7 @@ import beautify from 'js-beautify';
 import dotenv from 'dotenv';
 import { Indexer } from './indexer/Indexer';
 import { isPathSafe } from './utils/pathSafety';
+import path from 'path';
 
 
 dotenv.config();
@@ -351,11 +352,22 @@ app.get('/api/files', (req, res) => {
     } else {
       if (rootPath) {
         const prefix = rootPath.endsWith('/') ? rootPath : rootPath + '/';
-        files = db.prepare(
-          `SELECT id, path FROM files WHERE path LIKE ? ORDER BY path ASC`
-        ).all(prefix + '%');
+        files = db.prepare(`
+          SELECT f.id, f.path, COALESCE(SUM(e.complexity), 0) as complexity
+          FROM files f
+          LEFT JOIN entities e ON e.file_id = f.id
+          WHERE f.path LIKE ?
+          GROUP BY f.id, f.path
+          ORDER BY f.path ASC
+        `).all(prefix + '%');
       } else {
-        files = db.prepare('SELECT id, path FROM files ORDER BY path ASC').all();
+        files = db.prepare(`
+          SELECT f.id, f.path, COALESCE(SUM(e.complexity), 0) as complexity
+          FROM files f
+          LEFT JOIN entities e ON e.file_id = f.id
+          GROUP BY f.id, f.path
+          ORDER BY f.path ASC
+        `).all();
       }
     }
 
@@ -365,7 +377,54 @@ app.get('/api/files', (req, res) => {
   }
 });
 
-import path from 'path';
+// Chunk a file into 30-line segments
+const chunkFile = (content: string, filePath: string) => {
+  const lines = content.split('\n');
+  const chunks = [];
+  const SIZE = 30;
+  for (let i = 0; i < lines.length; i += SIZE) {
+    chunks.push({
+      filePath,
+      fileName: path.basename(filePath),
+      startLine: i + 1,
+      endLine: Math.min(i + SIZE, lines.length),
+      content: lines.slice(i, i + SIZE).join('\n').trim(),
+      language: path.extname(filePath).replace('.', '')
+    });
+  }
+  return chunks.filter(c => c.content.length > 20); // skip blank chunks
+};
+
+app.get('/api/chunks', (req, res) => {
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    // Get all indexed file paths from your existing DB
+    const files = db.prepare(`
+      SELECT path FROM files WHERE path IS NOT NULL
+    `).all() as { path: string }[];
+
+    const allChunks = [];
+    const activeWorkspace = getAllWorkspaces()[0] || '';
+
+    for (const { path: filePath } of files) {
+      try {
+        const absPath = path.isAbsolute(filePath)
+          ? filePath
+          : path.join(activeWorkspace, filePath);
+
+        if (!fs.existsSync(absPath)) continue;
+
+        const content = fs.readFileSync(absPath, 'utf-8');
+        const chunks = chunkFile(content, filePath);
+        allChunks.push(...chunks);
+      } catch { continue; }
+    }
+
+    res.json({ chunks: allChunks, total: allChunks.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.post('/api/contexts/summary', async (req, res) => {
   const { files, contextName } = req.body as { files: string[], contextName: string };
@@ -486,6 +545,134 @@ app.get('/api/entities', (req, res) => {
   }
 });
 
+// Impact analysis: Blast Radius
+app.get('/api/impact', (req, res) => {
+  const entityName = req.query.name as string;
+  if (!entityName) return res.status(400).json({ error: 'Entity name required' });
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    
+    // Find direct callers: files where content matches or calls matches
+    const directCallers = db.prepare(`
+      SELECT e.id, e.name, e.type, e.start_line, e.content, f.path as file_path
+      FROM entities e
+      JOIN files f ON e.file_id = f.id
+      WHERE (e.calls LIKE ? OR e.content LIKE ?) AND e.name != ?
+      LIMIT 100
+    `).all(`%${entityName}%`, `%${entityName}(%`, entityName) as any[];
+
+    const directNames = directCallers.map(c => c.name);
+    let indirectCallers: any[] = [];
+    
+    if (directNames.length > 0) {
+      // Find indirect callers (callers of direct callers)
+      const likeClauses = directNames.map(n => `e.calls LIKE '%${n}%' OR e.content LIKE '%${n}(%'`).join(' OR ');
+      indirectCallers = db.prepare(`
+        SELECT e.id, e.name, e.type, e.start_line, e.content, f.path as file_path
+        FROM entities e
+        JOIN files f ON e.file_id = f.id
+        WHERE (${likeClauses}) AND e.name NOT IN (${directNames.map(() => '?').join(',')}) AND e.name != ?
+        LIMIT 100
+      `).all(...directNames, entityName) as any[];
+    }
+
+    const dependents = [
+      ...directCallers.map(c => ({ ...c, isDirect: true })),
+      ...indirectCallers.map(c => ({ ...c, isDirect: false }))
+    ];
+
+    res.json({ dependents });
+  } catch (error) {
+    console.error('Impact error:', error);
+    res.status(500).json({ error: 'Failed to retrieve impact' });
+  }
+});
+
+// Impact count for badge
+app.get('/api/impact/count', (req, res) => {
+  const entityName = req.query.name as string;
+  if (!entityName) return res.json({ count: 0 });
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    const countQuery = db.prepare(`
+      SELECT COUNT(*) as cnt
+      FROM entities e
+      WHERE (e.calls LIKE ? OR e.content LIKE ?) AND e.name != ?
+    `).get(`%${entityName}%`, `%${entityName}(%`, entityName) as any;
+    
+    res.json({ count: countQuery.cnt });
+  } catch (error) {
+    res.json({ count: 0 });
+  }
+});
+
+// Code Health: Stale Code Detector
+// Impact Analysis (Blast Radius)
+app.get('/api/health/impact', (req, res) => {
+  const entityId = parseInt(req.query.id as string);
+  if (isNaN(entityId)) return res.status(400).json({ error: 'Valid entity ID required' });
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    
+    // Recursive CTE to find all incoming dependencies (reverse call graph)
+    const impact = db.prepare(`
+      WITH RECURSIVE blast_radius AS (
+        -- Initial: direct callers of our target
+        SELECT source_id, target_id, 1 as depth
+        FROM relations
+        WHERE target_id = ?
+        
+        UNION ALL
+        
+        -- Recursive: callers of those callers
+        SELECT r.source_id, r.target_id, br.depth + 1
+        FROM relations r
+        JOIN blast_radius br ON r.target_id = br.source_id
+        WHERE br.depth < 4 -- Depth limit for safety
+      )
+      SELECT DISTINCT 
+        br.source_id as id, 
+        e.name, 
+        e.type, 
+        f.path,
+        br.depth
+      FROM blast_radius br
+      JOIN entities e ON br.source_id = e.id
+      JOIN files f ON e.file_id = f.id
+      ORDER BY br.depth ASC
+    `).all(entityId);
+
+    res.json({ impact });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to calculate impact analysis' });
+  }
+});
+
+app.get('/api/health/stale', (req, res) => {
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    
+    // Find entities (functions or classes) that are NOT a target of any call relations
+    const staleEntities = db.prepare(`
+      SELECT e.id, e.name, e.type, e.start_line, e.content, e.complexity, f.path as file_path
+      FROM entities e
+      JOIN files f ON e.file_id = f.id
+      WHERE e.type IN ('function', 'class') 
+        AND e.id NOT IN (SELECT target_id FROM relations WHERE type = 'calls')
+      ORDER BY f.path ASC, e.start_line ASC
+      LIMIT 100
+    `).all();
+
+    res.json({ staleEntities });
+  } catch (error) {
+    console.error('Stale code check error:', error);
+    res.status(500).json({ error: 'Failed to retrieve stale code' });
+  }
+});
+
 // Dependency graph: workspace-scoped, depth-limited
 app.get('/api/graph', (req, res) => {
 
@@ -496,6 +683,7 @@ app.get('/api/graph', (req, res) => {
     const entityTypes = ((req.query.types as string) || 'function,class').split(',').filter(Boolean);
     const depth = Math.min(parseInt((req.query.depth as string) || '2', 10), 5);
     const rootPath = (req.query.rootPath as string || '').trim();
+    const traceId = (req.query.traceId as string || '').trim();
     const relsQuery = (req.query.rels as string || 'import,call,contains');
     const relFilters = relsQuery.split(',');
     
@@ -559,17 +747,28 @@ app.get('/api/graph', (req, res) => {
       }
     });
 
-    // 1. Initial Seed: All entities in the workspace files
-    const fileIdPlaceholders = files.map(() => '?').join(',');
-    const typePlaceholders = entityTypes.map(() => '?').join(',');
-    
-    let currentLevel: any[] = db.prepare(`
-      SELECT e.*, f.path as file_path
-      FROM entities e
-      JOIN files f ON e.file_id = f.id
-      WHERE e.file_id IN (${fileIdPlaceholders})
-        AND e.type IN (${typePlaceholders})
-    `).all(...files.map(f => f.id), ...entityTypes);
+    // 1. Initial Seed: All entities in the workspace files, OR the traced entity
+    let currentLevel: any[] = [];
+    if (traceId && traceId.startsWith('e_')) {
+      const id = parseInt(traceId.split('_')[1], 10);
+      currentLevel = db.prepare(`
+        SELECT e.*, f.path as file_path
+        FROM entities e
+        JOIN files f ON e.file_id = f.id
+        WHERE e.id = ?
+      `).all(id);
+    } else {
+      const fileIdPlaceholders = files.map(() => '?').join(',');
+      const typePlaceholders = entityTypes.map(() => '?').join(',');
+      
+      currentLevel = db.prepare(`
+        SELECT e.*, f.path as file_path
+        FROM entities e
+        JOIN files f ON e.file_id = f.id
+        WHERE e.file_id IN (${fileIdPlaceholders})
+          AND e.type IN (${typePlaceholders})
+      `).all(...files.map(f => f.id), ...entityTypes);
+    }
 
     currentLevel.forEach(e => {
       visitedEntityIds.add(e.id);
@@ -796,6 +995,50 @@ ${content}
       explanation: 'AI summary is temporarily unavailable. Please retry in a moment.',
       cached: false
     });
+  }
+});
+
+app.post('/api/ai/refactor', async (req, res) => {
+  const { content, path, name, prompt } = req.body;
+  const apiKey = process.env.OPENROUTER_API_KEY || 'sk-or-v1-placeholder';
+
+  try {
+    const systemPrompt = `You are a world-class software engineer. Refactor the provided code based on the user's instructions.
+STRICT RULES:
+- Output ONLY the refactored code.
+- DO NOT include any explanations, markdown markers (like \`\`\`javascript), or preamble.
+- Preserve the overall logic but improve structure, readability, or follow the specific user request.`;
+
+    const userPrompt = `Refactor the following code in "${path}":
+Request: ${prompt || "Improve code quality and maintainability."}
+
+Code:
+${content}`;
+
+    const aiRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "CodeLens AI"
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.0-flash-001",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        max_tokens: 2000
+      })
+    });
+
+    const data = await aiRes.json();
+    const refactored = data?.choices?.[0]?.message?.content?.trim();
+    
+    res.json({ refactored });
+  } catch (err) {
+    res.status(500).json({ error: 'Refactoring failed' });
   }
 });
 

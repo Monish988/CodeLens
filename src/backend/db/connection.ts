@@ -57,6 +57,7 @@ export class DBConnection {
             content TEXT NOT NULL,
             start_line INTEGER,
             end_line INTEGER,
+            complexity INTEGER DEFAULT 1,
             calls TEXT, -- JSON array of called function names
             FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
         );
@@ -65,6 +66,26 @@ export class DBConnection {
       // Create an index to quickly lookup entities by file
       this.db.exec(`
         CREATE INDEX IF NOT EXISTS idx_entities_file_id ON entities(file_id);
+      `);
+
+      // Relationships between entities (for Blast Radius and Stale Code)
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            type TEXT NOT NULL, -- 'calls', 'imports', etc.
+            FOREIGN KEY(source_id) REFERENCES entities(id) ON DELETE CASCADE,
+            FOREIGN KEY(target_id) REFERENCES entities(id) ON DELETE CASCADE,
+            UNIQUE(source_id, target_id, type)
+        );
+      `);
+
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_id);
+      `);
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_id);
       `);
 
       // FTS5 Virtual Table for Sub-100ms Search
@@ -108,6 +129,8 @@ export class DBConnection {
       // Handle migrations for existing DBs
       try { this.db.exec("ALTER TABLE contexts ADD COLUMN association TEXT;"); } catch (e) {}
       try { this.db.exec("ALTER TABLE contexts ADD COLUMN depth TEXT;"); } catch (e) {}
+      try { this.db.exec("ALTER TABLE entities ADD COLUMN complexity INTEGER DEFAULT 1;"); } catch (e) {}
+      try { this.db.exec("ALTER TABLE entities ADD COLUMN calls TEXT;"); } catch (e) {}
 
       // Items linked to contexts (Files or Snippets)
       this.db.exec(`

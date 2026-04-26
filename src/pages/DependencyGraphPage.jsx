@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ReactFlow, Background, Controls, MiniMap,
   useNodesState, useEdgesState, MarkerType,
@@ -124,6 +124,8 @@ const TYPE_META = [
 
 const GraphInner = () => {
   const navigate   = useNavigate();
+  const [searchParams] = useSearchParams();
+  const traceId = searchParams.get('traceId');
   const { fitView, setCenter } = useReactFlow();
   const rfWrapper  = useRef(null);
 
@@ -153,6 +155,7 @@ const GraphInner = () => {
   const [aiExpanded, setAiExpanded] = useState(false);
   const [hasGhostContext, setHasGhostContext] = useState(false);
   const sessionCache = useRef(new Map()); // In-memory session cache
+  const [hoveredNode, setHoveredNode] = useState(null);
 
   // Search
   const [searchQ,       setSearchQ]       = useState('');
@@ -225,7 +228,7 @@ const GraphInner = () => {
         .filter(([_, v]) => v).map(([k]) => k).join(',');
         
       const url = apiUrl('/api/graph') +
-        `?depth=${depth}&types=${encodeURIComponent(types)}&rootPath=${encodeURIComponent(root)}&rels=${encodeURIComponent(rels)}`;
+        `?depth=${depth}&types=${encodeURIComponent(types)}&rootPath=${encodeURIComponent(root)}&rels=${encodeURIComponent(rels)}${traceId ? `&traceId=${traceId}` : ''}`;
 
       const res  = await fetch(url);
       const data = await res.json();
@@ -694,7 +697,30 @@ const GraphInner = () => {
         </div>
 
         {/* ── Canvas ── */}
-        <div className="graph-canvas" ref={rfWrapper}>
+        <div className="graph-canvas" ref={rfWrapper} style={{position: 'relative'}}>
+          {hoveredNode && hoveredNode.data.content && (
+            <div className="node-hover-tooltip" style={{
+              position: 'absolute',
+              top: '20px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 1000,
+              backgroundColor: '#111318',
+              border: '1px solid #1f2937',
+              borderRadius: '6px',
+              padding: '10px',
+              boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
+              maxWidth: '400px',
+              pointerEvents: 'none'
+            }}>
+              <div style={{fontSize: '11px', color: '#aaff00', fontFamily: 'monospace', marginBottom: '6px', borderBottom: '1px solid #1f2937', paddingBottom: '4px'}}>
+                {hoveredNode.data.label} <span style={{color: '#666'}}>in {hoveredNode.data.path?.split(/[/\\]/).pop()}</span>
+              </div>
+              <pre style={{fontSize: '10px', color: '#ccc', fontFamily: 'monospace', whiteSpace: 'pre-wrap', margin: 0, maxHeight: '150px', overflow: 'hidden'}}>
+                {hoveredNode.data.content.length > 300 ? hoveredNode.data.content.slice(0, 300) + '...' : hoveredNode.data.content}
+              </pre>
+            </div>
+          )}
           {error && (
             <div className="graph-empty">
               <AlertCircle size={36} opacity={0.3} />
@@ -722,6 +748,8 @@ const GraphInner = () => {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={onNodeClick}
+            onNodeMouseEnter={(_, node) => setHoveredNode(node)}
+            onNodeMouseLeave={() => setHoveredNode(null)}
             nodeTypes={nodeTypes}
             fitView fitViewOptions={{ padding: 0.15 }}
             minZoom={0.02} maxZoom={3}
