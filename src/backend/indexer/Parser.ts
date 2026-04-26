@@ -10,6 +10,7 @@ export interface ParsedEntity {
   content: string;
   start_line: number;
   end_line: number;
+  complexity?: number;
   calls?: string[];
 }
 
@@ -79,6 +80,7 @@ export class ASTParser {
         content: node.text,
         start_line: node.startPosition.row + 1,
         end_line: node.endPosition.row + 1,
+        complexity: 1,
         calls: [],
       };
       entities.push(newEntity);
@@ -90,6 +92,7 @@ export class ASTParser {
         content: node.text,
         start_line: node.startPosition.row + 1,
         end_line: node.endPosition.row + 1,
+        complexity: 1,
         calls: [],
       };
       entities.push(newEntity);
@@ -132,6 +135,22 @@ export class ASTParser {
           currentEntity.calls?.push(calledName);
         }
       }
+    }
+
+    // Cyclomatic complexity check
+    const complexityNodes = [
+      'if_statement',
+      'for_statement',
+      'for_in_statement',
+      'while_statement',
+      'do_statement',
+      'switch_case',
+      'catch_clause',
+      'ternary_expression'
+    ];
+
+    if (currentEntity && complexityNodes.includes(type)) {
+      currentEntity.complexity = (currentEntity.complexity || 1) + 1;
     }
 
     // Recursively traverse children

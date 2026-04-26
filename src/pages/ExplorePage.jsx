@@ -3,8 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import {
   LayoutGrid, RefreshCw, XCircle, Search,
   ChevronDown, ChevronRight, File, Folder,
-  Wand2, AlertTriangle, Bookmark, Check
+  Wand2, AlertTriangle, Bookmark, Check, ExternalLink,
+  Sparkles, Zap,
+  Scissors, Diff, FileEdit, Undo2, Save, X
 } from 'lucide-react';
+import ReactDiffViewer from 'react-diff-viewer-continued';
 import Prism from 'prismjs';
 import 'prismjs/themes/prism-tomorrow.css';
 import 'prismjs/components/prism-javascript';
@@ -23,6 +26,21 @@ const FileTreeNode = ({ node, level = 0, onSelectFile, selectedFile }) => {
   const [isExpanded, setIsExpanded] = useState(level < 2);
   const paddingLeft = `${level * 14 + 8}px`;
 
+  const getComplexityColor = (c, isFolder = false) => {
+    if (!c || c <= (isFolder ? 5 : 1)) return 'transparent';
+    if (isFolder) {
+      if (c < 20) return '#4EC9B044';
+      if (c < 50) return '#DCDCAA44';
+      if (c < 100) return '#CE917844';
+      return '#F4474744';
+    } else {
+      if (c < 10) return '#4EC9B0';
+      if (c < 25) return '#DCDCAA';
+      if (c < 50) return '#CE9178';
+      return '#F44747';
+    }
+  };
+
   if (node.type === 'file') {
     const isActive = selectedFile === node.path;
     return (
@@ -30,9 +48,20 @@ const FileTreeNode = ({ node, level = 0, onSelectFile, selectedFile }) => {
         className={`tree-item file ${isActive ? 'active' : ''}`}
         style={{ paddingLeft }}
         onClick={() => onSelectFile(node.path)}
-        title={node.path}
+        title={`${node.path} (Complexity: ${node.complexity || 0})`}
       >
         <span className="ti-spacer" />
+        <div 
+          className="complexity-dot" 
+          style={{ 
+            width: '6px', 
+            height: '6px', 
+            borderRadius: '50%', 
+            backgroundColor: getComplexityColor(node.complexity),
+            marginRight: '8px',
+            flexShrink: 0
+          }} 
+        />
         <File size={13} className="type-icon" />
         <span className="node-name">{node.name}</span>
       </div>
@@ -43,15 +72,21 @@ const FileTreeNode = ({ node, level = 0, onSelectFile, selectedFile }) => {
     <>
       <div
         className={`tree-item folder ${isExpanded ? 'expanded' : ''}`}
-        style={{ paddingLeft }}
+        style={{ 
+          paddingLeft,
+          borderLeft: node.complexity > 20 ? `2px solid ${getComplexityColor(node.complexity, true).replace('44', '')}` : 'none'
+        }}
         onClick={() => setIsExpanded(!isExpanded)}
-        title={node.path || node.name}
+        title={`${node.path || node.name} (Total Complexity: ${node.complexity || 0})`}
       >
         {isExpanded
           ? <ChevronDown size={13} className="expand-icon" />
           : <ChevronRight size={13} className="expand-icon" />}
         <Folder size={13} className="type-icon" />
         <span className="node-name">{node.name}</span>
+        {node.complexity > 10 && (
+          <span style={{ fontSize: '9px', color: '#666', marginLeft: '6px' }}>{node.complexity}</span>
+        )}
       </div>
       {isExpanded && node.children && (
         <div className="tree-children">
@@ -156,7 +191,29 @@ const ExplorePage = () => {
   const [contexts,      setContexts]      = useState([]);
   const [showContexts,  setShowContexts]  = useState(false);
   const [pinnedStatus,  setPinnedStatus]  = useState({}); // { contextId: boolean }
+  const [contextMenu,   setContextMenu]   = useState(null);
+  const [activeOutlineTab, setActiveOutlineTab] = useState('symbols'); // 'symbols' | 'docs' | 'impact'
+  const [aiDoc, setAiDoc] = useState(null);
+  const [isGeneratingDoc, setIsGeneratingDoc] = useState(false);
+  const [impactData, setImpactData] = useState(null);
+  const [isCalculatingImpact, setIsCalculatingImpact] = useState(false);
+  const [showRefactorModal, setShowRefactorModal] = useState(false);
+  const [refactorPrompt, setRefactorPrompt] = useState('');
+  const [refactoringEntity, setRefactoringEntity] = useState(null);
+  const [refactoredCode, setRefactoredCode] = useState(null);
+  const [isRefactoring, setIsRefactoring] = useState(false);
   const codeRef = useRef(null);
+
+  const handleContextMenu = (e, entity) => {
+    e.preventDefault();
+    setContextMenu({
+      mouseX: e.clientX,
+      mouseY: e.clientY,
+      entity
+    });
+  };
+
+  const closeContextMenu = () => setContextMenu(null);
 
   // ── Persist widths ──────────────────────────────────────────────────────
 
@@ -226,11 +283,13 @@ const ExplorePage = () => {
           segments.forEach((seg, i) => {
             if (!seg) return;
             if (i === segments.length - 1) {
-              cur.children[seg] = { type: 'file', name: seg, path: f.path };
+              cur.children[seg] = { type: 'file', name: seg, path: f.path, complexity: f.complexity || 0 };
             } else {
-              cur.children[seg] = cur.children[seg] || { type: 'folder', name: seg, path: prefix + segments.slice(0, i + 1).join(sep), children: {} };
+              cur.children[seg] = cur.children[seg] || { type: 'folder', name: seg, path: prefix + segments.slice(0, i + 1).join(sep), children: {}, complexity: 0 };
               cur = cur.children[seg];
             }
+            // Aggregate complexity to parent folders
+            cur.complexity = (cur.complexity || 0) + (f.complexity || 0);
           });
         });
         setFileTree(root);
@@ -306,9 +365,96 @@ const ExplorePage = () => {
       }
 
       setFileEntities(eData.entities || []);
+      setAiDoc(null); // Clear old doc when file changes
     } catch (err) {
 
     }
+  };
+
+  const fetchAiDoc = async (entity = null) => {
+    setIsGeneratingDoc(true);
+    setActiveOutlineTab('docs');
+    try {
+      const body = entity 
+        ? { 
+            content: entity.content, 
+            path: selectedFile, 
+            name: entity.name, 
+            type: entity.type, 
+            entityId: entity.id 
+          }
+        : {
+            content: displayContent.slice(0, 5000), // Cap for summary
+            path: selectedFile,
+            name: selectedFile.split('/').pop(),
+            type: 'file',
+            entityId: -1 // Special ID for whole file
+          };
+
+      const res = await fetch(apiUrl('/api/ai/explain'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      setAiDoc({
+        title: entity ? entity.name : 'File Overview',
+        explanation: data.explanation,
+        cached: data.cached
+      });
+    } catch (err) {
+      setAiDoc({ title: 'Error', explanation: 'Failed to generate documentation.' });
+    } finally {
+      setIsGeneratingDoc(false);
+    }
+  };
+
+  const fetchImpact = async (entity) => {
+    setIsCalculatingImpact(true);
+    setActiveOutlineTab('impact');
+    try {
+      const res = await fetch(apiUrl(`/api/health/impact?id=${entity.id}`));
+      const data = await res.json();
+      setImpactData({
+        target: entity.name,
+        impacted: data.impact || []
+      });
+    } catch (err) {
+      setImpactData({ target: entity.name, impacted: [], error: true });
+    } finally {
+      setIsCalculatingImpact(false);
+    }
+  };
+
+  const handleRefactor = async () => {
+    if (!refactorPrompt.trim() || isRefactoring) return;
+    setIsRefactoring(true);
+    try {
+      const res = await fetch(apiUrl('/api/ai/refactor'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: refactoringEntity.content,
+          path: selectedFile,
+          name: refactoringEntity.name,
+          prompt: refactorPrompt
+        })
+      });
+      const data = await res.json();
+      setRefactoredCode(data.refactored);
+    } catch (err) {
+      alert('Refactoring failed. Please check your API connection.');
+    } finally {
+      setIsRefactoring(false);
+    }
+  };
+
+  const openRefactorModal = (entity) => {
+    setRefactoringEntity(entity);
+    setRefactorPrompt('');
+    setRefactoredCode(null);
+    setShowRefactorModal(true);
+    closeContextMenu();
   };
 
   // ── Format / prettify ────────────────────────────────────────────────────
@@ -473,6 +619,17 @@ const ExplorePage = () => {
                 </div>
 
                 <div className="editor-header-actions">
+                  <button 
+                    className="format-btn"
+                    onClick={() => {
+                      window.location.href = `vscode://file/${selectedFile}:1`;
+                    }}
+                    title="Open in VS Code"
+                  >
+                    <ExternalLink size={12} />
+                    VS Code
+                  </button>
+
                   {/* Minified warning */}
                   {isMinified && !isFormatted && (
                     <span className="minified-badge" title="File appears minified">
@@ -547,24 +704,228 @@ const ExplorePage = () => {
 
         <Splitter onDrag={handleOutlineDrag} />
 
-        {/* ── Outline ── */}
+        {/* ── Outline / Docs ── */}
         <div className="outline-pane" style={{ width: outlineWidth, minWidth: OUTLINE_MIN, maxWidth: OUTLINE_MAX }}>
-          <div className="outline-header">OUTLINE</div>
+          <div className="outline-tabs">
+            <button 
+              className={`outline-tab ${activeOutlineTab === 'symbols' ? 'active' : ''}`}
+              onClick={() => setActiveOutlineTab('symbols')}
+            >
+              SYMBOLS
+            </button>
+            <button 
+              className={`outline-tab ${activeOutlineTab === 'docs' ? 'active' : ''}`}
+              onClick={() => setActiveOutlineTab('docs')}
+            >
+              AI DOCS
+            </button>
+            <button 
+              className={`outline-tab ${activeOutlineTab === 'impact' ? 'active' : ''}`}
+              onClick={() => setActiveOutlineTab('impact')}
+            >
+              IMPACT
+            </button>
+          </div>
+          
           <div className="outline-content">
-            {fileEntities.length > 0
-              ? fileEntities.map((entity, idx) => (
-                  <div key={idx} className={`outline-item ${entity.type}`}>
-                    {getEntityBadge(entity.type)}
-                    <span className="item-name" title={entity.name}>{entity.name}</span>
-                    {entity.start_line && <span className="item-line">:{entity.start_line}</span>}
+            {activeOutlineTab === 'symbols' ? (
+              fileEntities.length > 0
+                ? fileEntities.map((entity, idx) => (
+                      <div 
+                        key={idx} 
+                        className={`outline-item ${entity.type}`} 
+                        onContextMenu={(e) => handleContextMenu(e, entity)}
+                        onClick={() => {
+                          if (activeOutlineTab === 'docs') fetchAiDoc(entity);
+                          else if (activeOutlineTab === 'impact') fetchImpact(entity);
+                        }}
+                      >
+                        {getEntityBadge(entity.type)}
+                        <span className="item-name" title={entity.name}>{entity.name}</span>
+                        {entity.start_line && <span className="item-line">:{entity.start_line}</span>}
+                      </div>
+                  ))
+                : <div className="outline-empty">No symbols found.</div>
+            ) : activeOutlineTab === 'docs' ? (
+              <div className="ai-docs-view">
+                {isGeneratingDoc ? (
+                  <div className="ai-loading">
+                    <Sparkles size={20} className="spin-slow" color="var(--accent-green)" />
+                    <p>Analyzing code patterns...</p>
                   </div>
-                ))
-              : <div className="outline-empty">No symbols found.</div>
-            }
+                ) : aiDoc ? (
+                  <div className="ai-doc-content">
+                    <div className="doc-header">
+                      <Zap size={14} color="var(--accent-green)" />
+                      <span>{aiDoc.title}</span>
+                      {aiDoc.cached && <span className="cached-badge">CACHED</span>}
+                    </div>
+                    <div className="doc-text">
+                      {aiDoc.explanation}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="ai-docs-empty">
+                    <Sparkles size={24} opacity={0.3} />
+                    <p>Select a symbol or click below for a full overview</p>
+                    <button className="gen-full-doc-btn" onClick={() => fetchAiDoc()}>
+                      Generate File Summary
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="impact-view">
+                {isCalculatingImpact ? (
+                  <div className="ai-loading">
+                    <RefreshCw size={20} className="spin" color="var(--accent-green)" />
+                    <p>Tracing reverse dependencies...</p>
+                  </div>
+                ) : impactData ? (
+                  <div className="impact-content">
+                    <div className="impact-header">
+                      <AlertTriangle size={14} color="#F59E0B" />
+                      <span>Blast Radius: {impactData.target}</span>
+                    </div>
+                    <div className="impact-list">
+                      {impactData.impacted.length > 0 ? (
+                        impactData.impacted.map((item, i) => (
+                          <div 
+                            key={i} 
+                            className="impact-item"
+                            onClick={() => handleSelectFile(item.path)}
+                          >
+                            <div className="impact-item-main">
+                              {getEntityBadge(item.type)}
+                              <span className="impact-item-name">{item.name}</span>
+                              <span className="impact-depth">+{item.depth}</span>
+                            </div>
+                            <div className="impact-item-path">{item.path.split('/').pop()}</div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="impact-empty">
+                          No incoming dependencies found. This entity might be stale or unreachable.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="ai-docs-empty">
+                    <Info size={24} opacity={0.3} />
+                    <p>Select a symbol from the list to see what depends on it</p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
       </div>
+
+      {/* Context Menu Overlay */}
+      {contextMenu && (
+        <>
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9998 }} onClick={closeContextMenu} onContextMenu={(e) => { e.preventDefault(); closeContextMenu(); }} />
+          <div className="explore-context-menu" style={{ top: contextMenu.mouseY, left: contextMenu.mouseX }}>
+            <div className="explore-context-menu-item" onClick={() => {
+              fetchImpact(contextMenu.entity);
+              closeContextMenu();
+            }}>
+              <Zap size={14} color="#F59E0B" />
+              Analyze Blast Radius
+            </div>
+            <div className="explore-context-menu-item" onClick={() => {
+              navigate(`/graph?traceId=e_${contextMenu.entity.id}`);
+              closeContextMenu();
+            }}>
+              <Wand2 size={14} color="#61AFEF" />
+              Trace data flow for `{contextMenu.entity.name}`
+            </div>
+            <div className="explore-context-menu-item" onClick={() => openRefactorModal(contextMenu.entity)}>
+              <Scissors size={14} color="#C678DD" />
+              AI Refactor `{contextMenu.entity.name}`...
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Refactor Modal */}
+      {showRefactorModal && (
+        <div className="refactor-modal-overlay">
+          <div className="refactor-modal">
+            <div className="refactor-modal-header">
+              <div className="header-left">
+                <Scissors size={18} color="var(--accent-green)" />
+                <h2>AI Refactor: {refactoringEntity?.name}</h2>
+              </div>
+              <button className="close-modal-btn" onClick={() => setShowRefactorModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="refactor-modal-body">
+              {!refactoredCode ? (
+                <div className="refactor-setup">
+                  <p className="setup-hint">Describe how you want to refactor this entity. We'll show you a diff preview before any changes.</p>
+                  <textarea 
+                    placeholder="e.g., Extract logic to helper functions, convert to arrow function, add error handling..."
+                    value={refactorPrompt}
+                    onChange={(e) => setRefactorPrompt(e.target.value)}
+                    autoFocus
+                  />
+                  <div className="setup-actions">
+                    <button className="cancel-btn" onClick={() => setShowRefactorModal(false)}>Cancel</button>
+                    <button 
+                      className="primary-refactor-btn" 
+                      onClick={handleRefactor}
+                      disabled={!refactorPrompt.trim() || isRefactoring}
+                    >
+                      {isRefactoring ? (
+                        <><RefreshCw size={14} className="spin" /> Thinking...</>
+                      ) : (
+                        <><Sparkles size={14} /> Preview Refactor</>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="refactor-diff-view">
+                  <div className="diff-stats">
+                    <Diff size={14} />
+                    <span>Side-by-side comparison</span>
+                    <button className="retry-refactor-btn" onClick={() => setRefactoredCode(null)}>
+                      <Undo2 size={12} /> New Prompt
+                    </button>
+                  </div>
+                  <div className="diff-container">
+                    <ReactDiffViewer 
+                      oldValue={refactoringEntity.content} 
+                      newValue={refactoredCode} 
+                      splitView={true} 
+                      useDarkTheme={true}
+                      leftTitle="Original"
+                      rightTitle="Refactored"
+                    />
+                  </div>
+                  <div className="diff-actions">
+                    <div className="blast-radius-warning">
+                      <Zap size={14} color="#F59E0B" />
+                      <span>Note: Refactoring might affect {impactData?.impacted?.length || 'multiple'} incoming dependencies.</span>
+                    </div>
+                    <button className="cancel-btn" onClick={() => setShowRefactorModal(false)}>Close Preview</button>
+                    <button className="apply-refactor-btn" onClick={() => {
+                      alert('Disk write is disabled in this preview. Please copy the code manually.');
+                    }}>
+                      <Save size={14} /> Save to Disk
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

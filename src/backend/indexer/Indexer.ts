@@ -186,7 +186,7 @@ export class Indexer extends EventEmitter {
         }
 
         // Insert new entities
-        const insertEntity = db.prepare('INSERT INTO entities (file_id, type, name, content, start_line, end_line, calls) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        const insertEntity = db.prepare('INSERT INTO entities (file_id, type, name, content, start_line, end_line, complexity, calls) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         const insertFts = db.prepare('INSERT INTO search_index (name, content, type, file_id) VALUES (?, ?, ?, ?)');
 
         for (const entity of entities) {
@@ -197,6 +197,7 @@ export class Indexer extends EventEmitter {
             entity.content, 
             entity.start_line, 
             entity.end_line,
+            entity.complexity || 1,
             entity.calls ? JSON.stringify(entity.calls) : null
           );
           
@@ -204,6 +205,26 @@ export class Indexer extends EventEmitter {
           // but we still index their content.
           insertFts.run(entity.name, entity.content, entity.type, fileId.toString());
         }
+
+        // Resolve relations for this file (source)
+        db.prepare(`
+          INSERT OR IGNORE INTO relations (source_id, target_id, type)
+          SELECT e1.id as source_id, e2.id as target_id, 'calls' as type
+          FROM entities e1
+          JOIN json_each(e1.calls) as called
+          JOIN entities e2 ON e2.name = called.value AND e2.type IN ('function', 'class')
+          WHERE e1.file_id = ? AND e1.calls IS NOT NULL
+        `).run(fileId);
+
+        // Resolve relations where this file is the target
+        db.prepare(`
+          INSERT OR IGNORE INTO relations (source_id, target_id, type)
+          SELECT e1.id as source_id, e2.id as target_id, 'calls' as type
+          FROM entities e1
+          JOIN json_each(e1.calls) as called
+          JOIN entities e2 ON e2.name = called.value AND e2.type IN ('function', 'class')
+          WHERE e2.file_id = ? AND e1.calls IS NOT NULL
+        `).run(fileId);
       });
 
       insertTransaction();
