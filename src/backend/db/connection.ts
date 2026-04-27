@@ -144,6 +144,42 @@ export class DBConnection {
             FOREIGN KEY(context_id) REFERENCES contexts(id) ON DELETE CASCADE
         );
       `);
+
+      // Orphan Review State (Keep / Flag / Unreviewed)
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS orphan_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'unreviewed', -- 'unreviewed', 'kept', 'flagged'
+            reviewed_at INTEGER,
+            FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+        );
+      `);
+
+      // Churn Data — cached git log dates per file
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS churn_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL UNIQUE,
+            dates TEXT NOT NULL, -- JSON array of ISO date strings
+            total_commits INTEGER DEFAULT 0,
+            last_scanned INTEGER NOT NULL,
+            FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+        );
+      `);
+
+      // Health Snapshots — periodic scores for sparkline trending
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS health_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_date TEXT NOT NULL,
+            complexity_score REAL NOT NULL,
+            churn_score REAL NOT NULL,
+            orphan_score REAL NOT NULL,
+            total_score REAL NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+      `);
     });
 
     executeSchema();

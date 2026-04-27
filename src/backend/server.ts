@@ -1081,6 +1081,437 @@ app.get('/api/graph/search', (req, res) => {
     res.status(500).json({ error: 'Search failed' });
   }
 });
+// ── Code Health API Endpoints ────────────────────────────────────────────────
+
+// Complexity: all entities grouped by file with scores
+app.get('/api/health/complexity', (req, res) => {
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    let rootPath = (req.query.rootPath as string || '').trim();
+    if (!rootPath) {
+      const ws = db.prepare('SELECT path FROM workspaces ORDER BY last_indexed DESC LIMIT 1').get() as any;
+      if (ws) rootPath = ws.path;
+    }
+    const likePrefix = rootPath ? (rootPath.endsWith('/') ? rootPath : rootPath + '/') : '';
+
+    const files = db.prepare(`
+      SELECT f.id, f.path, 
+        COALESCE(SUM(e.complexity), 0) as total_complexity,
+        COUNT(e.id) as entity_count
+      FROM files f
+      LEFT JOIN entities e ON e.file_id = f.id AND e.type IN ('function', 'class')
+      WHERE f.path LIKE ?
+      GROUP BY f.id, f.path
+      HAVING total_complexity > 0
+      ORDER BY total_complexity DESC
+    `).all(likePrefix + '%');
+
+    res.json({ files, workspace: rootPath });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to retrieve complexity data' });
+  }
+});
+
+// Complexity: per-file function breakdown
+app.get('/api/health/complexity/file', (req, res) => {
+  const fileId = parseInt(req.query.fileId as string);
+  if (isNaN(fileId)) return res.status(400).json({ error: 'Valid fileId required' });
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+
+    const file = db.prepare('SELECT id, path FROM files WHERE id = ?').get(fileId) as any;
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    const entities = db.prepare(`
+      SELECT id, name, type, complexity, content, start_line, end_line, calls
+      FROM entities
+      WHERE file_id = ? AND type IN ('function', 'class')
+      ORDER BY complexity DESC
+    `).all(fileId);
+
+    // Compute breakdown from content for each entity
+    const enriched = entities.map((e: any) => {
+      const content = e.content || '';
+      return {
+        ...e,
+        complexity_breakdown: {
+          ifs: (content.match(/\bif\s*\(/g) || []).length,
+          loops: (content.match(/\b(for|while|do)\s*[\s(]/g) || []).length,
+          ternaries: (content.match(/\?\s*[^:]/g) || []).length,
+          catches: (content.match(/\bcatch\s*\(/g) || []).length,
+          logicals: (content.match(/&&|\|\|/g) || []).length,
+        },
+        loc: content.split('\n').length
+      };
+    });
+
+    res.json({ file, entities: enriched });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to retrieve file complexity' });
+  }
+});
+
+// Churn: all files with churn data
+app.get('/api/health/churn', (req, res) => {
+  const days = parseInt(req.query.days as string) || 90;
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    let rootPath = (req.query.rootPath as string || '').trim();
+    if (!rootPath) {
+      const ws = db.prepare('SELECT path FROM workspaces ORDER BY last_indexed DESC LIMIT 1').get() as any;
+      if (ws) rootPath = ws.path;
+    }
+    const likePrefix = rootPath ? (rootPath.endsWith('/') ? rootPath : rootPath + '/') : '';
+
+    const results = db.prepare(`
+      SELECT f.id, f.path, c.dates, c.total_commits, c.last_scanned
+      FROM files f
+      JOIN churn_data c ON c.file_id = f.id
+      WHERE f.path LIKE ?
+      ORDER BY c.total_commits DESC
+    `).all(likePrefix + '%') as any[];
+
+    // Filter dates within the requested day range
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    const cutoffStr = cutoff.toISOString().split('T')[0];
+
+    const files = results.map(r => {
+      const allDates: string[] = JSON.parse(r.dates || '[]');
+      const filteredDates = allDates.filter(d => d >= cutoffStr);
+      return {
+        id: r.id,
+        path: r.path,
+        total_commits: r.total_commits,
+        recent_commits: filteredDates.length,
+        dates: filteredDates,
+        last_scanned: r.last_scanned
+      };
+    });
+
+    res.json({ files, days, workspace: rootPath });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to retrieve churn data' });
+  }
+});
+
+// Churn: per-file calendar data
+app.get('/api/health/churn/file', (req, res) => {
+  const filePath = req.query.path as string;
+  if (!filePath) return res.status(400).json({ error: 'File path required' });
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    const file = db.prepare('SELECT id FROM files WHERE path = ?').get(filePath) as any;
+    if (!file) return res.status(404).json({ error: 'File not indexed' });
+
+    const churn = db.prepare('SELECT dates, total_commits, last_scanned FROM churn_data WHERE file_id = ?').get(file.id) as any;
+    if (!churn) return res.json({ dates: [], total_commits: 0 });
+
+    const dates: string[] = JSON.parse(churn.dates || '[]');
+    // Build day-count map
+    const dayMap: Record<string, number> = {};
+    dates.forEach(d => { dayMap[d] = (dayMap[d] || 0) + 1; });
+
+    res.json({ dates, dayMap, total_commits: churn.total_commits, last_scanned: churn.last_scanned });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to retrieve file churn' });
+  }
+});
+
+// Orphans: stale code detector with review status
+app.get('/api/health/orphans', (req, res) => {
+  const sort = (req.query.sort as string) || 'loc';
+  const filter = (req.query.filter as string) || 'all';
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+
+    let orderClause = 'ORDER BY loc DESC';
+    if (sort === 'oldest') orderClause = 'ORDER BY f.last_modified ASC';
+    else if (sort === 'file') orderClause = 'ORDER BY f.path ASC, e.start_line ASC';
+
+    let filterClause = '';
+    if (filter === 'flagged') filterClause = "AND COALESCE(r.status, 'unreviewed') = 'flagged'";
+    else if (filter === 'kept') filterClause = "AND COALESCE(r.status, 'unreviewed') = 'kept'";
+    else if (filter === 'unreviewed') filterClause = "AND COALESCE(r.status, 'unreviewed') = 'unreviewed'";
+
+    const orphans = db.prepare(`
+      SELECT 
+        e.id, e.name, e.type, e.start_line, e.end_line, e.complexity,
+        (e.end_line - e.start_line + 1) as loc,
+        f.path as file_path, f.last_modified,
+        COALESCE(r.status, 'unreviewed') as review_status,
+        r.reviewed_at
+      FROM entities e
+      JOIN files f ON e.file_id = f.id
+      LEFT JOIN orphan_reviews r ON r.entity_id = e.id
+      WHERE e.type IN ('function', 'class')
+        AND e.id NOT IN (SELECT target_id FROM relations WHERE type = 'calls')
+        ${filterClause}
+      ${orderClause}
+      LIMIT 200
+    `).all();
+
+    // Counts for filter pills
+    const countAll = db.prepare(`
+      SELECT COUNT(*) as cnt FROM entities e
+      WHERE e.type IN ('function', 'class')
+        AND e.id NOT IN (SELECT target_id FROM relations WHERE type = 'calls')
+    `).get() as any;
+
+    const countFlagged = db.prepare(`
+      SELECT COUNT(*) as cnt FROM entities e
+      JOIN orphan_reviews r ON r.entity_id = e.id
+      WHERE e.type IN ('function', 'class')
+        AND e.id NOT IN (SELECT target_id FROM relations WHERE type = 'calls')
+        AND r.status = 'flagged'
+    `).get() as any;
+
+    const countKept = db.prepare(`
+      SELECT COUNT(*) as cnt FROM entities e
+      JOIN orphan_reviews r ON r.entity_id = e.id
+      WHERE e.type IN ('function', 'class')
+        AND e.id NOT IN (SELECT target_id FROM relations WHERE type = 'calls')
+        AND r.status = 'kept'
+    `).get() as any;
+
+    res.json({
+      orphans,
+      counts: {
+        all: countAll.cnt,
+        flagged: countFlagged.cnt,
+        kept: countKept.cnt,
+        unreviewed: countAll.cnt - countFlagged.cnt - countKept.cnt
+      }
+    });
+  } catch (error) {
+    console.error('Orphan detection error:', error);
+    res.status(500).json({ error: 'Failed to detect orphans' });
+  }
+});
+
+// Orphans: set review status
+app.post('/api/health/orphans/review', (req, res) => {
+  const { entityId, status } = req.body;
+  if (!entityId || !['unreviewed', 'kept', 'flagged'].includes(status)) {
+    return res.status(400).json({ error: 'entityId and valid status required' });
+  }
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    if (status === 'unreviewed') {
+      db.prepare('DELETE FROM orphan_reviews WHERE entity_id = ?').run(entityId);
+    } else {
+      db.prepare(`
+        INSERT INTO orphan_reviews (entity_id, status, reviewed_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(entity_id) DO UPDATE SET status=excluded.status, reviewed_at=excluded.reviewed_at
+      `).run(entityId, status, Date.now());
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update review status' });
+  }
+});
+
+// Orphans: bulk review
+app.post('/api/health/orphans/review-bulk', (req, res) => {
+  const { entityIds, status } = req.body;
+  if (!Array.isArray(entityIds) || !['unreviewed', 'kept', 'flagged'].includes(status)) {
+    return res.status(400).json({ error: 'entityIds array and valid status required' });
+  }
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    const upsert = db.prepare(`
+      INSERT INTO orphan_reviews (entity_id, status, reviewed_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(entity_id) DO UPDATE SET status=excluded.status, reviewed_at=excluded.reviewed_at
+    `);
+    const del = db.prepare('DELETE FROM orphan_reviews WHERE entity_id = ?');
+
+    const bulkTransaction = db.transaction(() => {
+      for (const id of entityIds) {
+        if (status === 'unreviewed') del.run(id);
+        else upsert.run(id, status, Date.now());
+      }
+    });
+    bulkTransaction();
+    res.json({ success: true, count: entityIds.length });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to bulk update' });
+  }
+});
+
+// Orphans: export
+app.get('/api/health/orphans/export', (req, res) => {
+  const format = (req.query.format as string) || 'md';
+  const scope = (req.query.scope as string) || 'flagged';
+
+  try {
+    const db = (indexer as any).dbConn.getDb();
+
+    let filterClause = '';
+    if (scope === 'flagged') filterClause = "AND COALESCE(r.status, 'unreviewed') = 'flagged'";
+    else if (scope === 'unreviewed') filterClause = "AND COALESCE(r.status, 'unreviewed') = 'unreviewed'";
+
+    const orphans = db.prepare(`
+      SELECT e.name, e.type, e.start_line, e.end_line,
+        (e.end_line - e.start_line + 1) as loc,
+        f.path as file_path,
+        COALESCE(r.status, 'unreviewed') as review_status
+      FROM entities e
+      JOIN files f ON e.file_id = f.id
+      LEFT JOIN orphan_reviews r ON r.entity_id = e.id
+      WHERE e.type IN ('function', 'class')
+        AND e.id NOT IN (SELECT target_id FROM relations WHERE type = 'calls')
+        ${filterClause}
+      ORDER BY loc DESC
+    `).all() as any[];
+
+    if (format === 'json') {
+      res.json({ orphans });
+    } else if (format === 'text') {
+      const text = orphans.map(o => `${o.file_path}:${o.name}:${o.start_line}`).join('\n');
+      res.type('text/plain').send(text);
+    } else {
+      // Markdown table
+      let md = `# Orphan Functions Report\n\n`;
+      md += `| Function | File | Lines | LOC | Status |\n`;
+      md += `|----------|------|-------|-----|--------|\n`;
+      orphans.forEach(o => {
+        const shortPath = o.file_path.split('/').slice(-2).join('/');
+        md += `| \`${o.name}\` | ${shortPath} | ${o.start_line}–${o.end_line} | ${o.loc} | ${o.review_status} |\n`;
+      });
+      md += `\n**Total: ${orphans.length} orphan functions**\n`;
+      md += `**Potential LOC savings: ${orphans.reduce((sum: number, o: any) => sum + o.loc, 0)} lines**\n`;
+      res.type('text/markdown').send(md);
+    }
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to export orphans' });
+  }
+});
+
+// Unified Health Score
+app.get('/api/health/score', (req, res) => {
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    let rootPath = (req.query.rootPath as string || '').trim();
+    if (!rootPath) {
+      const ws = db.prepare('SELECT path FROM workspaces ORDER BY last_indexed DESC LIMIT 1').get() as any;
+      if (ws) rootPath = ws.path;
+    }
+    const likePrefix = rootPath ? (rootPath.endsWith('/') ? rootPath : rootPath + '/') : '';
+
+    // Complexity penalty: % of functions with complexity > 10
+    const totalFunctions = db.prepare(`
+      SELECT COUNT(*) as cnt FROM entities e
+      JOIN files f ON e.file_id = f.id
+      WHERE e.type = 'function' AND f.path LIKE ?
+    `).get(likePrefix + '%') as any;
+
+    const complexFunctions = db.prepare(`
+      SELECT COUNT(*) as cnt FROM entities e
+      JOIN files f ON e.file_id = f.id
+      WHERE e.type = 'function' AND e.complexity > 10 AND f.path LIKE ?
+    `).get(likePrefix + '%') as any;
+
+    const complexityPenalty = totalFunctions.cnt > 0
+      ? (complexFunctions.cnt / totalFunctions.cnt) * 100
+      : 0;
+
+    // Churn penalty: % of files with > 10 commits in last 90 days
+    const totalFiles = db.prepare(`
+      SELECT COUNT(*) as cnt FROM files WHERE path LIKE ?
+    `).get(likePrefix + '%') as any;
+
+    const highChurnFiles = db.prepare(`
+      SELECT COUNT(*) as cnt FROM churn_data c
+      JOIN files f ON c.file_id = f.id
+      WHERE f.path LIKE ? AND c.total_commits > 10
+    `).get(likePrefix + '%') as any;
+
+    const churnPenalty = totalFiles.cnt > 0
+      ? (highChurnFiles.cnt / totalFiles.cnt) * 100
+      : 0;
+
+    // Orphan penalty: % of functions that are orphans
+    const orphanCount = db.prepare(`
+      SELECT COUNT(*) as cnt FROM entities e
+      JOIN files f ON e.file_id = f.id
+      WHERE e.type IN ('function', 'class')
+        AND e.id NOT IN (SELECT target_id FROM relations WHERE type = 'calls')
+        AND f.path LIKE ?
+    `).get(likePrefix + '%') as any;
+
+    const orphanPenalty = totalFunctions.cnt > 0
+      ? (orphanCount.cnt / totalFunctions.cnt) * 100
+      : 0;
+
+    // Unified score: 100 - weighted penalties
+    const complexityScore = Math.max(0, 100 - complexityPenalty);
+    const churnScore = Math.max(0, 100 - churnPenalty);
+    const orphanScore = Math.max(0, 100 - orphanPenalty);
+    const totalScore = Math.round(
+      100 - (complexityPenalty * 0.4) - (churnPenalty * 0.35) - (orphanPenalty * 0.25)
+    );
+
+    // Priority actions: top 5 most impactful entities to fix
+    const priorities = db.prepare(`
+      SELECT e.id, e.name, e.type, e.complexity, e.start_line, f.path as file_path,
+        (SELECT COUNT(*) FROM entities e2 WHERE (e2.calls LIKE '%' || e.name || '%') AND e2.id != e.id) as dependent_count,
+        COALESCE(c.total_commits, 0) as churn_count,
+        (e.end_line - e.start_line + 1) as loc
+      FROM entities e
+      JOIN files f ON e.file_id = f.id
+      LEFT JOIN churn_data c ON c.file_id = f.id
+      WHERE e.type IN ('function', 'class') AND e.complexity > 5 AND f.path LIKE ?
+      ORDER BY (e.complexity * COALESCE(c.total_commits, 1) * (SELECT COUNT(*) + 1 FROM entities e2 WHERE e2.calls LIKE '%' || e.name || '%' AND e2.id != e.id)) DESC
+      LIMIT 5
+    `).all(likePrefix + '%');
+
+    // Get recent snapshots for sparkline
+    const snapshots = db.prepare(`
+      SELECT snapshot_date, total_score FROM health_snapshots
+      ORDER BY created_at DESC LIMIT 30
+    `).all();
+
+    res.json({
+      score: Math.max(0, Math.min(100, totalScore)),
+      complexity: { score: Math.round(complexityScore), penalty: Math.round(complexityPenalty), complex_count: complexFunctions.cnt, total: totalFunctions.cnt },
+      churn: { score: Math.round(churnScore), penalty: Math.round(churnPenalty), high_churn_count: highChurnFiles.cnt, total: totalFiles.cnt },
+      orphans: { score: Math.round(orphanScore), penalty: Math.round(orphanPenalty), count: orphanCount.cnt, total: totalFunctions.cnt },
+      priorities,
+      snapshots,
+      workspace: rootPath
+    });
+  } catch (error) {
+    console.error('Health score error:', error);
+    res.status(500).json({ error: 'Failed to compute health score' });
+  }
+});
+
+// Health score snapshot
+app.post('/api/health/score/snapshot', (req, res) => {
+  try {
+    const db = (indexer as any).dbConn.getDb();
+    const { complexity_score, churn_score, orphan_score, total_score } = req.body;
+    const today = new Date().toISOString().split('T')[0];
+
+    // Upsert: only one snapshot per day
+    db.prepare(`
+      INSERT INTO health_snapshots (snapshot_date, complexity_score, churn_score, orphan_score, total_score, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(today, complexity_score, churn_score, orphan_score, total_score, Date.now());
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to save snapshot' });
+  }
+});
 
 const PORT = 3001;
 app.listen(PORT, () => {

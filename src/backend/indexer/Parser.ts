@@ -11,6 +11,7 @@ export interface ParsedEntity {
   start_line: number;
   end_line: number;
   complexity?: number;
+  complexity_breakdown?: { ifs: number; loops: number; ternaries: number; catches: number; logicals: number };
   calls?: string[];
 }
 
@@ -81,6 +82,7 @@ export class ASTParser {
         start_line: node.startPosition.row + 1,
         end_line: node.endPosition.row + 1,
         complexity: 1,
+        complexity_breakdown: { ifs: 0, loops: 0, ternaries: 0, catches: 0, logicals: 0 },
         calls: [],
       };
       entities.push(newEntity);
@@ -93,6 +95,7 @@ export class ASTParser {
         start_line: node.startPosition.row + 1,
         end_line: node.endPosition.row + 1,
         complexity: 1,
+        complexity_breakdown: { ifs: 0, loops: 0, ternaries: 0, catches: 0, logicals: 0 },
         calls: [],
       };
       entities.push(newEntity);
@@ -146,11 +149,20 @@ export class ASTParser {
       'do_statement',
       'switch_case',
       'catch_clause',
-      'ternary_expression'
+      'ternary_expression',
+      'logical_expression'
     ];
 
     if (currentEntity && complexityNodes.includes(type)) {
       currentEntity.complexity = (currentEntity.complexity || 1) + 1;
+      // Track breakdown categories
+      if (currentEntity.complexity_breakdown) {
+        if (type === 'if_statement') currentEntity.complexity_breakdown.ifs++;
+        else if (['for_statement', 'for_in_statement', 'while_statement', 'do_statement'].includes(type)) currentEntity.complexity_breakdown.loops++;
+        else if (type === 'ternary_expression') currentEntity.complexity_breakdown.ternaries++;
+        else if (type === 'catch_clause') currentEntity.complexity_breakdown.catches++;
+        else if (type === 'logical_expression') currentEntity.complexity_breakdown.logicals++;
+      }
     }
 
     // Recursively traverse children

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { execSync } from 'child_process';
 import chokidar from 'chokidar';
 import beautify from 'js-beautify';
 import { EventEmitter } from 'events';
@@ -54,6 +55,9 @@ export class Indexer extends EventEmitter {
         VALUES (?, ?) 
         ON CONFLICT(path) DO UPDATE SET last_indexed=excluded.last_indexed
       `).run(workspacePath, Date.now());
+
+      // Cache git churn data for all indexed files
+      this.cacheChurnData(workspacePath);
       
     } catch (err) {
       console.error('Error during indexing:', err);
@@ -248,6 +252,61 @@ export class Indexer extends EventEmitter {
       removeTransaction();
     } catch (err) {
       console.error(`Failed to remove file ${filePath} from index:`, err);
+    }
+  }
+
+  /**
+   * Caches git log dates for each indexed file into churn_data table
+   */
+  private cacheChurnData(workspacePath: string) {
+    try {
+      // Check if workspace is a git repo
+      execSync('git rev-parse --is-inside-work-tree', { cwd: workspacePath, stdio: 'pipe' });
+    } catch {
+      console.log('Not a git repository, skipping churn data caching.');
+      return;
+    }
+
+    const db = this.dbConn.getDb();
+    const files = db.prepare('SELECT id, path FROM files WHERE path LIKE ?')
+      .all((workspacePath.endsWith('/') ? workspacePath : workspacePath + '/') + '%') as any[];
+
+    const upsertChurn = db.prepare(`
+      INSERT INTO churn_data (file_id, dates, total_commits, last_scanned)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(file_id) DO UPDATE SET dates=excluded.dates, total_commits=excluded.total_commits, last_scanned=excluded.last_scanned
+    `);
+
+    const insertChurnBatch = db.transaction((items: any[]) => {
+      for (const item of items) {
+        upsertChurn.run(item.file_id, item.dates, item.total_commits, item.last_scanned);
+      }
+    });
+
+    const churnItems: any[] = [];
+
+    for (const file of files) {
+      try {
+        const result = execSync(
+          `git log --format="%ad" --date=short -- "${file.path}"`,
+          { cwd: workspacePath, stdio: 'pipe', timeout: 5000 }
+        ).toString().trim();
+
+        const dates = result ? result.split('\n').filter(Boolean) : [];
+        churnItems.push({
+          file_id: file.id,
+          dates: JSON.stringify(dates),
+          total_commits: dates.length,
+          last_scanned: Date.now()
+        });
+      } catch {
+        // Skip files that fail (binary, permissions, etc.)
+      }
+    }
+
+    if (churnItems.length > 0) {
+      insertChurnBatch(churnItems);
+      console.log(`Cached churn data for ${churnItems.length} files.`);
     }
   }
 }
