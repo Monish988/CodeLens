@@ -9,6 +9,7 @@ import ExplorePage from './pages/ExplorePage';
 import HistoryPage from './pages/HistoryPage';
 import ContextsPage from './pages/ContextsPage';
 import DependencyGraphPage from './pages/DependencyGraphPage';
+import CodeHealthPage from './pages/CodeHealthPage';
 import SettingsPage from './pages/SettingsPage';
 
 function App() {
@@ -23,6 +24,7 @@ function App() {
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/contexts" element={<ContextsPage />} />
           <Route path="/dependency" element={<DependencyGraphPage />} />
+          <Route path="/health" element={<CodeHealthPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>
@@ -31,3 +33,4 @@ function App() {
 }
 
 export default App;
+

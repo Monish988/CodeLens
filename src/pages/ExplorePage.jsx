@@ -4,7 +4,7 @@ import {
   LayoutGrid, RefreshCw, XCircle, Search,
   ChevronDown, ChevronRight, File, Folder,
   Wand2, AlertTriangle, Bookmark, Check, ExternalLink,
-  Sparkles, Zap,
+  Sparkles, Zap, Info,
   Scissors, Diff, FileEdit, Undo2, Save, X
 } from 'lucide-react';
 import ReactDiffViewer from 'react-diff-viewer-continued';

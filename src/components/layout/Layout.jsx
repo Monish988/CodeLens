@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { Search, LayoutGrid, History, Bookmark, Share2, Settings, HelpCircle } from 'lucide-react';
+import { Search, LayoutGrid, History, Bookmark, Share2, Stethoscope, Settings, HelpCircle } from 'lucide-react';
 import './Layout.css';
 
 const Layout = () => {
@@ -12,6 +12,7 @@ const Layout = () => {
     { path: '/history', label: 'Search History', icon: <History size={18} /> },
     { path: '/contexts', label: 'Saved Contexts', icon: <Bookmark size={18} /> },
     { path: '/dependency', label: 'Dependency Graph', icon: <Share2 size={18} /> },
+    { path: '/health', label: 'Code Health', icon: <Stethoscope size={18} /> },
   ];
 
   return (
