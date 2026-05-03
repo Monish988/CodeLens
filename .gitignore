@@ -24,6 +24,6 @@ dist-ssr
 *.sw?
 .env
 .agents
-graphify-out/
-venv/
+graphify-out
+venv
 

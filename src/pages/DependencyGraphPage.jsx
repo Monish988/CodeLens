@@ -537,7 +537,17 @@ const GraphInner = () => {
 
   const toggleRel  = key => setRelFilters(f => ({ ...f, [key]: !f[key] }));
   const toggleType = key => setTypeFilters(f => ({ ...f, [key]: !f[key] }));
-  const toggleDir  = ()  => setDirection(d => d === 'TB' ? 'LR' : 'TB');
+  
+  const cycleLayout = () => {
+    if (layoutPreset === 'radial') {
+      setLayoutPreset('dagre');
+      setDirection('TB');
+    } else if (layoutPreset === 'dagre' && direction === 'TB') {
+      setDirection('LR');
+    } else {
+      setLayoutPreset('radial');
+    }
+  };
 
   // ── Derived display ────────────────────────────────────────────────────
 
@@ -567,8 +577,8 @@ const GraphInner = () => {
           {loading && <span className="loading-badge">Computing…</span>}
         </div>
         <div className="graph-actions">
-          <button className={`dir-btn ${direction === 'LR' ? 'active' : ''}`} onClick={toggleDir} title="Toggle layout direction">
-            <GitBranch size={13} />{direction === 'TB' ? 'Top→Down' : 'Left→Right'}
+          <button className="dir-btn active" onClick={cycleLayout} title="Toggle layout mode">
+            <GitBranch size={13} />{layoutPreset === 'radial' ? 'Spherical' : direction === 'TB' ? 'Top→Down' : 'Left→Right'}
           </button>
           <button className="graph-btn" onClick={() => fetchGraph(workspace)} title="Reload">
             <RefreshCw size={13} className={loading ? 'spin' : ''} />
@@ -653,21 +663,28 @@ const GraphInner = () => {
 
           {/* Layout presets & health overlay */}
           <div className="inspector-section">
-            <div className="section-title">LAYOUT PRESET</div>
-            <div className="layout-presets-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '10px' }}>
+            <div className="section-title">LAYOUT</div>
+            <div className="layout-presets-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '4px', marginBottom: '10px' }}>
+              <button 
+                className={`node-toggle ${layoutPreset === 'dagre' && direction === 'TB' ? 'active' : ''}`}
+                onClick={() => { setLayoutPreset('dagre'); setDirection('TB'); }}
+                style={{ flex: 1, padding: '4px 2px', fontSize: '11px', whiteSpace: 'nowrap' }}
+              >
+                Top→Down
+              </button>
+              <button 
+                className={`node-toggle ${layoutPreset === 'dagre' && direction === 'LR' ? 'active' : ''}`}
+                onClick={() => { setLayoutPreset('dagre'); setDirection('LR'); }}
+                style={{ flex: 1, padding: '4px 2px', fontSize: '11px', whiteSpace: 'nowrap' }}
+              >
+                Left→Right
+              </button>
               <button 
                 className={`node-toggle ${layoutPreset === 'radial' ? 'active' : ''}`}
                 onClick={() => setLayoutPreset('radial')}
-                style={{ flex: 1, padding: '4px 6px', fontSize: '12px' }}
+                style={{ flex: 1, padding: '4px 2px', fontSize: '11px', whiteSpace: 'nowrap' }}
               >
-                Radial
-              </button>
-              <button 
-                className={`node-toggle ${layoutPreset === 'dagre' ? 'active' : ''}`}
-                onClick={() => setLayoutPreset('dagre')}
-                style={{ flex: 1, padding: '4px 6px', fontSize: '12px' }}
-              >
-                Hierarchy
+                Spherical
               </button>
             </div>
             
