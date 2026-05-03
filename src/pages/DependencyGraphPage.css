@@ -974,3 +974,27 @@
 .ai-content li {
   margin-bottom: 0.35rem;
 }
+
+/* ─── Health Overlay Styles ─────────────────────────────────────────────── */
+
+.rf-node.health-on {
+  transition: transform 0.25s, border-color 0.25s, width 0.25s, height 0.25s ease-in-out;
+  border-width: 2px !important;
+  background: rgba(17, 19, 24, 0.9) !important;
+}
+
+.rf-node-risk {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  color: #EF4444;
+  font-size: 14px;
+  font-weight: bold;
+  animation: float-badge 1.5s ease-in-out infinite;
+  text-shadow: 0 0 4px rgba(239, 68, 68, 0.75);
+}
+
+@keyframes float-badge {
+  0%, 100% { transform: translateY(0) rotate(45deg); }
+  50% { transform: translateY(-3px) rotate(45deg); }
+}
