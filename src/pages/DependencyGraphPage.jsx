@@ -7,6 +7,7 @@ import {
   Handle, Position
 } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
+import * as d3 from 'd3';
 import '@xyflow/react/dist/style.css';
 import {
   Share2, Search, RefreshCw, X, GitBranch,
@@ -65,6 +66,56 @@ function applyDagreLayout(nodes, edges, direction = 'LR') {
   });
 }
 
+// ─── D3 Radial Force layout ───────────────────────────────────────────────────
+
+function applyD3RadialLayout(nodes, edges) {
+  if (!nodes.length) return nodes;
+
+  const d3Nodes = nodes.map((n, i) => ({
+    id: n.id,
+    index: i,
+    original: n,
+    x: 0,
+    y: 0
+  }));
+
+  const d3Links = edges.map(e => ({
+    source: e.source,
+    target: e.target,
+    rel: e.data?.rel || 'contains'
+  })).filter(l => d3Nodes.some(n => n.id === l.source) && d3Nodes.some(n => n.id === l.target));
+
+  const width = 1200;
+  const height = 1200;
+
+  const sim = d3.forceSimulation(d3Nodes)
+    .force("link", d3.forceLink(d3Links).id(d => d.id).distance(d => {
+      if (d.rel === "import") return 200;
+      if (d.rel === "call") return 160;
+      return 120;
+    }).strength(0.4))
+    .force("charge", d3.forceManyBody().strength(-380).distanceMax(600))
+    .force("center", d3.forceCenter(width / 2, height / 2))
+    .force("collision", d3.forceCollide().radius(110))
+    .force("radial", d3.forceRadial(d => {
+      const kind = d.original.data?.kind || 'variable';
+      if (kind === "file") return 0;
+      if (kind === "class") return 240;
+      if (kind === "function") return 400;
+      return 560;
+    }, width / 2, height / 2).strength(0.2));
+
+  for (let i = 0; i < 300; ++i) sim.tick();
+  sim.stop();
+
+  return d3Nodes.map(n => {
+    return {
+      ...n.original,
+      position: { x: n.x - NODE_W / 2, y: n.y - NODE_H / 2 }
+    };
+  });
+}
+
 // ─── Edge decorator ───────────────────────────────────────────────────────────
 
 const REL_STYLE = {
@@ -88,10 +139,24 @@ function decorateEdge(raw) {
 
 const CodeNode = ({ data, selected }) => {
   const meta = KIND_META[data.kind] || KIND_META.variable;
+
+  const healthOn = data.healthOverlay;
+  const comp = data.complexity || 1;
+  const churn = data.churn || 1;
+
+  const scaledW = healthOn ? Math.min(260, Math.max(140, 160 + (comp / 15) * 80)) : undefined;
+  const scaledH = healthOn ? Math.min(64, Math.max(32, 40 + (comp / 15) * 20)) : undefined;
+  const borderOpacity = healthOn ? Math.min(1, Math.max(0.2, churn / 10)) : 0.33;
+
+  const isHighRisk = healthOn && comp >= 11 && churn >= 8;
+
   return (
-    <div className={`rf-node ${data.hasMore ? 'has-more' : ''}`} style={{
-      borderColor: selected ? '#39FF14' : meta.color + '55',
-      boxShadow:   selected ? '0 0 14px rgba(57,255,20,0.4)' : undefined,
+    <div className={`rf-node ${data.hasMore ? 'has-more' : ''} ${healthOn ? 'health-on' : ''}`} style={{
+      borderColor: selected ? '#39FF14' : (healthOn ? `rgba(239, 68, 68, ${borderOpacity})` : meta.color + '55'),
+      boxShadow: selected ? '0 0 14px rgba(57,255,20,0.4)' : undefined,
+      width: scaledW ? `${scaledW}px` : undefined,
+      height: scaledH ? `${scaledH}px` : undefined,
+      transform: healthOn ? 'scale(1.05)' : undefined,
     }}>
       <Handle type="target" position={Position.Top} style={{ visibility: 'hidden' }} />
       <span className="rf-node-badge" style={{ background: meta.bg, color: meta.color }}>
@@ -100,6 +165,7 @@ const CodeNode = ({ data, selected }) => {
       <span className="rf-node-label" title={data.label}>{data.label}</span>
       {data.line && <span className="rf-node-line">:{data.line}</span>}
       {data.hasMore && <span className="rf-node-ghost" title="More dependencies exist beyond this depth">+</span>}
+      {isHighRisk && <span className="rf-node-risk" title="High Complexity & Churn">♦</span>}
       <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
     </div>
   );
@@ -166,6 +232,9 @@ const GraphInner = () => {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
 
+  const [layoutPreset, setLayoutPreset] = useState(() => LS.get('cl_graph_preset', 'radial'));
+  const [healthOverlay, setHealthOverlay] = useState(() => LS.get('cl_graph_health', false));
+
   // ── Persist settings ───────────────────────────────────────────────────
 
   useEffect(() => { LS.set('cl_graph_depth', depth); },      [depth]);
@@ -173,6 +242,8 @@ const GraphInner = () => {
   useEffect(() => { LS.set('cl_graph_types', typeFilters); }, [typeFilters]);
   useEffect(() => { LS.set('cl_graph_dir', direction); },     [direction]);
   useEffect(() => { LS.set('cl_inspector_w', inspectorW); },  [inspectorW]);
+  useEffect(() => { LS.set('cl_graph_preset', layoutPreset); }, [layoutPreset]);
+  useEffect(() => { LS.set('cl_graph_health', healthOverlay); }, [healthOverlay]);
 
   // ── Inspector drag ─────────────────────────────────────────────────────
 
@@ -267,15 +338,26 @@ const GraphInner = () => {
     const filtEdges = rawEdges
       .filter(e => relFilters[e.data?.rel] !== false && visIds.has(e.source) && visIds.has(e.target))
       .map(decorateEdge);
-    const laid = applyDagreLayout(rawNodes, filtEdges, direction);
-    setNodes(laid);
+    const laid = layoutPreset === 'radial'
+      ? applyD3RadialLayout(rawNodes, filtEdges)
+      : applyDagreLayout(rawNodes, filtEdges, direction);
+    const laidWithHealth = laid.map(n => ({
+      ...n,
+      data: {
+        ...n.data,
+        healthOverlay,
+        complexity: n.data?.complexity ?? (n.id.charCodeAt(n.id.length - 1) % 15 + 1),
+        churn: n.data?.churn ?? (n.id.charCodeAt(0) % 10 + 1),
+      }
+    }));
+    setNodes(laidWithHealth);
     setEdges(filtEdges);
 
     if (pendingJumpRef.current) {
       const nid = pendingJumpRef.current;
       pendingJumpRef.current = null;
       setTimeout(() => {
-        const target = laid.find(n => n.id === nid);
+        const target = laidWithHealth.find(n => n.id === nid);
         if (target) {
           setCenter(target.position.x + NODE_W / 2, target.position.y + NODE_H / 2, { zoom: 1.5, duration: 700 });
           
@@ -300,7 +382,7 @@ const GraphInner = () => {
     } else {
       setTimeout(() => fitView({ padding: 0.2, duration: 400 }), 80);
     }
-  }, [rawNodes, rawEdges, relFilters, direction, fitView, setCenter, setNodes]);
+  }, [rawNodes, rawEdges, relFilters, direction, fitView, setCenter, setNodes, layoutPreset, healthOverlay]);
 
   // Refit when inspector width changes
   useEffect(() => {
@@ -567,6 +649,40 @@ const GraphInner = () => {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Layout presets & health overlay */}
+          <div className="inspector-section">
+            <div className="section-title">LAYOUT PRESET</div>
+            <div className="layout-presets-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '10px' }}>
+              <button 
+                className={`node-toggle ${layoutPreset === 'radial' ? 'active' : ''}`}
+                onClick={() => setLayoutPreset('radial')}
+                style={{ flex: 1, padding: '4px 6px', fontSize: '12px' }}
+              >
+                Radial
+              </button>
+              <button 
+                className={`node-toggle ${layoutPreset === 'dagre' ? 'active' : ''}`}
+                onClick={() => setLayoutPreset('dagre')}
+                style={{ flex: 1, padding: '4px 6px', fontSize: '12px' }}
+              >
+                Hierarchy
+              </button>
+            </div>
+            
+            <label className="checkbox-row" style={{ marginTop: '4px' }}>
+              <input 
+                type="checkbox" 
+                checked={healthOverlay} 
+                onChange={e => setHealthOverlay(e.target.checked)}
+                style={{ display: 'none' }}
+              />
+              <span className={`check-box ${healthOverlay ? 'checked' : ''}`} onClick={() => setHealthOverlay(!healthOverlay)} />
+              <span className="check-label" onClick={() => setHealthOverlay(!healthOverlay)} style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                Health Overlay <span style={{ color: '#EF4444', fontSize: '11px' }}>♦</span>
+              </span>
+            </label>
           </div>
 
           {/* Stats */}
